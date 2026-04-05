@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "job-assist-skill"
+version = "3.1.1"
+description = "AI-powered Career Assistant for LinkedIn: Search, Tailor, Apply"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "Apache 2.0"}
+authors = [
+    {name = "Abdullah Madoun", email = "your.email@example.com"}
+]
+keywords = ["linkedin", "career-assistant", "job-search", "cv-tailoring", "ai-agent", "vibecoding"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "playwright>=1.40.0",
+    "requests>=2.31.0",
+    "lxml>=5.0.0",
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "aiofiles>=23.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "build>=1.0.0",
+    "twine>=4.0.0",
+    "wheel>=0.40.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/AbdullahMadoun/JobAssistSkill"
+Documentation = "https://github.com/AbdullahMadoun/JobAssistSkill#readme"
+Repository = "https://github.com/AbdullahMadoun/JobAssistSkill"
+Issues = "https://github.com/AbdullahMadoun/JobAssistSkill/issues"
+
+[tool.setuptools]
+packages = ["job_assist_skill", "job_assist_skill.assistant", "job_assist_skill.scraper"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q --strict-markers"
+testpaths = []
+markers = [
+    "unit: Unit tests that don't require external services",
+    "integration: Integration tests that require LinkedIn session",
+]

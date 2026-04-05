@@ -1,0 +1,68 @@
+name: career-assistant
+version: 1.0.0
+description: Automated job search, CV tailoring, and email campaign management skill for opencode
+author: user
+tags:
+  - job-search
+  - linkedin
+  - cv-tailoring
+  - latex
+  - email
+  - outlook
+triggers:
+  - /career
+  - /apply
+  - job search
+  - tailor cv
+  - send applications
+inputs:
+  jobs_or_ideas:
+    type: string
+    description: "Job search queries or career ideas (e.g., 'Python developer San Francisco' or 'frontend remote startup')"
+    required: true
+    multi: true
+  cv_template:
+    type: file
+    description: "User's LaTeX CV template file (.tex)"
+    required: true
+  cover_letter_template:
+    type: file
+    description: "Optional LaTeX cover letter template file (.tex)"
+    required: false
+  search_roles:
+    type: string
+    description: "Job titles/roles to search for"
+    required: false
+  search_locations:
+    type: string
+    description: "Locations to search"
+    required: false
+  include_company_posts:
+    type: boolean
+    description: "Also scrape company LinkedIn pages for hiring posts"
+    default: true
+outputs:
+  compiled_cv:
+    type: file
+    description: "Tailored and compiled one-page PDF CV"
+  emails:
+    type: array
+    description: "Generated personalized emails ready for review"
+  cover_letters:
+    type: array
+    description: "Optional cover letters if template provided"
+requires:
+  python: "3.8+"
+  linkedin_session: "path to LinkedIn session.json"
+  outlook_mcp: "configured and running"
+  latex_distribution: "pdflatex or similar"
+config:
+  max_jobs_per_search: 10
+  max_company_posts_per_company: 5
+  default_rewrite_coverage: 0.6
+  one_page_strict: true
+  auto_compile: true
+  feedback_storage: "career_assistant/storage/feedback.db"
+ui:
+  port: 5050
+  approval_workflow: true

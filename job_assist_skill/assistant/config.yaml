@@ -1,0 +1,52 @@
+# Career Assistant Configuration
+
+# User Info
+user:
+  name: ""
+  email: ""
+  cv_path: "cv.tex"
+
+# LinkedIn Session
+linkedin:
+  session_file: "linkedin_session.json"
+
+# Search Settings
+search:
+  roles:
+    - "software engineer"
+    - "full stack developer"
+    - "backend engineer"
+  locations:
+    - "Remote"
+    - "Dubai"
+    - "Riyadh"
+  max_hours_age: 24
+  posts_per_query: 10
+  stream: "both"  # posts, jobs, or both
+
+# Ranking Settings  
+ranking:
+  keyword_weight: 0.4
+  evidence_quality_weight: 0.35
+  relevance_weight: 0.25
+
+# CV Tailoring
+cv_tailoring:
+  show_critical_only: true
+  require_approval: true
+
+# Output Settings
+output:
+  directory: "output"
+  pdf_compiler: "pdflatex"  # pdflatex, xelatex, or tectonic
+
+# Email Settings
+email:
+  client: "mailto"  # mailto only for now
+  include_pdf: true
+
+# Preferences (auto-updated)
+preferences:
+  preferred_skills: []
+  preferred_locations: []
+  preferred_companies: []

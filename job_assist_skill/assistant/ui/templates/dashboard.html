@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Career Assistant - Job Candidates</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        header { background: #0077b5; color: white; padding: 20px; margin-bottom: 20px; border-radius: 8px; }
+        header h1 { font-size: 1.5rem; }
+        .stats { display: flex; gap: 20px; margin-bottom: 20px; }
+        .stat-card { background: white; padding: 15px 25px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .stat-card .number { font-size: 2rem; font-weight: bold; color: #0077b5; }
+        .stat-card .label { color: #666; font-size: 0.9rem; }
+        .stat-card.pending .number { color: #f59e0b; }
+        .stat-card.approved .number { color: #10b981; }
+        .stat-card.rejected .number { color: #ef4444; }
+        .filters { background: white; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+        .filters select, .filters input { padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; margin-right: 10px; }
+        .filters button { background: #0077b5; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; }
+        .candidate-list { display: grid; gap: 15px; }
+        .candidate-card { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .candidate-card h3 { margin-bottom: 10px; color: #0077b5; }
+        .candidate-card .meta { color: #666; font-size: 0.9rem; margin-bottom: 10px; }
+        .candidate-card .snippet { background: #f8f9fa; padding: 10px; border-radius: 4px; margin: 10px 0; font-size: 0.9rem; }
+        .candidate-card .actions { display: flex; gap: 10px; margin-top: 15px; }
+        .btn { padding: 8px 16px; border-radius: 4px; border: none; cursor: pointer; font-size: 0.9rem; }
+        .btn-approve { background: #10b981; color: white; }
+        .btn-reject { background: #ef4444; color: white; }
+        .btn-tailor { background: #0077b5; color: white; }
+        .btn-view { background: #6b7280; color: white; }
+        .badge { display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; }
+        .badge-pending { background: #fef3c7; color: #d97706; }
+        .badge-approved { background: #d1fae5; color: #059669; }
+        .badge-rejected { background: #fee2e2; color: #dc2626; }
+        .badge-source { background: #e0e7ff; color: #4338ca; }
+        .empty { text-align: center; padding: 40px; color: #666; }
+        nav { margin-bottom: 20px; }
+        nav a { color: #0077b5; text-decoration: none; margin-right: 20px; font-weight: 500; }
+        nav a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Career Assistant</h1>
+            <p>Job search, CV tailoring, and application management</p>
+        </header>
+
+        <nav>
+            <a href="/">Dashboard</a>
+            <a href="/approved">Approved Candidates</a>
+        </nav>
+
+        <div class="stats">
+            <div class="stat-card">
+                <div class="number">{{ stats.total }}</div>
+                <div class="label">Total Candidates</div>
+            </div>
+            <div class="stat-card pending">
+                <div class="number">{{ stats.pending }}</div>
+                <div class="label">Pending Review</div>
+            </div>
+            <div class="stat-card approved">
+                <div class="number">{{ stats.approved }}</div>
+                <div class="label">Approved</div>
+            </div>
+            <div class="stat-card rejected">
+                <div class="number">{{ stats.rejected }}</div>
+                <div class="label">Rejected</div>
+            </div>
+        </div>
+
+        <div class="filters">
+            <button onclick="refreshCandidates()">Refresh from LinkedIn</button>
+        </div>
+
+        {% if candidates %}
+        <div class="candidate-list">
+            {% for candidate in candidates %}
+            <div class="candidate-card" id="candidate-{{ candidate.id }}">
+                <h3>
+                    {{ candidate.title }}
+                    <span class="badge badge-source">{{ candidate.source }}</span>
+                    <span class="badge badge-{{ candidate.status }}">{{ candidate.status }}</span>
+                </h3>
+                <div class="meta">
+                    <strong>{{ candidate.company }}</strong>
+                    {% if candidate.location %} | {{ candidate.location }}{% endif %}
+                    {% if candidate.llm_score %} | Score: {{ "%.0f"|format(candidate.llm_score) }}{% endif %}
+                </div>
+                {% if candidate.snippet %}
+                <div class="snippet">{{ candidate.snippet }}</div>
+                {% endif %}
+                <div class="meta">
+                    <a href="{{ candidate.url }}" target="_blank">View on LinkedIn</a>
+                </div>
+                <div class="actions">
+                    <button class="btn btn-approve" onclick="approveCandidate('{{ candidate.id }}')">Approve</button>
+                    <button class="btn btn-reject" onclick="rejectCandidate('{{ candidate.id }}')">Reject</button>
+                    <button class="btn btn-tailor" onclick="tailorCV('{{ candidate.id }}')">Tailor CV</button>
+                    <button class="btn btn-view" onclick="viewCandidate('{{ candidate.id }}')">Details</button>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty">
+            <p>No pending candidates. Click "Refresh from LinkedIn" to search for jobs.</p>
+        </div>
+        {% endif %}
+    </div>
+
+    <script>
+        async function approveCandidate(id) {
+            const response = await fetch(`/api/candidate/${id}/approve`, { method: 'POST' });
+            if (response.ok) {
+                const card = document.getElementById(`candidate-${id}`);
+                card.querySelector('.badge-pending').className = 'badge badge-approved';
+                card.querySelector('.badge-pending').textContent = 'approved';
+            }
+        }
+
+        async function rejectCandidate(id) {
+            const response = await fetch(`/api/candidate/${id}/reject`, { method: 'POST' });
+            if (response.ok) {
+                const card = document.getElementById(`candidate-${id}`);
+                card.style.opacity = '0.5';
+                setTimeout(() => card.remove(), 500);
+            }
+        }
+
+        async function tailorCV(id) {
+            const response = await fetch(`/api/candidate/${id}/tailor`, { method: 'POST' });
+            if (response.ok) {
+                alert('CV tailoring started. Check back in a moment.');
+            }
+        }
+
+        function viewCandidate(id) {
+            window.location.href = `/candidate/${id}`;
+        }
+
+        async function refreshCandidates() {
+            const response = await fetch('/refresh', { method: 'POST' });
+            if (response.ok) {
+                location.reload();
+            }
+        }
+    </script>
+</body>
+</html>

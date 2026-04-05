@@ -1,0 +1,29 @@
+[
+    {
+        "id": 1,
+        "title": "Senior Software Engineer",
+        "company": "TechCorp",
+        "location": "Remote - US",
+        "source": "linkedin_posts",
+        "text": "We're hiring a Senior Software Engineer!\n\nRequirements:\n- 5+ years of Python experience\n- Experience with Django, Flask, FastAPI\n- AWS or GCP cloud experience\n- Bachelor's in Computer Science\n\nLocation: Remote (US)\nCompetitive salary + equity",
+        "url": "https://www.linkedin.com/feed/update/123"
+    },
+    {
+        "id": 2,
+        "title": "Machine Learning Engineer",
+        "company": "AI Dynamics",
+        "location": "San Francisco, CA",
+        "source": "linkedin_posts",
+        "text": "Join our ML team! Looking for a Machine Learning Engineer with:\n\n- 3+ years of ML experience\n- PyTorch or TensorFlow\n- Computer Vision or NLP experience\n- PhD or Master's preferred\n\nWe offer competitive compensation and the chance to work on cutting-edge AI projects.",
+        "url": "https://www.linkedin.com/feed/update/456"
+    },
+    {
+        "id": 3,
+        "title": "Backend Engineer",
+        "company": "Cloud Systems Inc",
+        "location": "Remote",
+        "source": "linkedin_posts",
+        "text": "Cloud Systems is hiring Backend Engineers!\n\nWhat we're looking for:\n- Strong Java or Go experience\n- Kubernetes and Docker\n- Microservices architecture\n- SQL and NoSQL databases\n\nRemote-first company with great benefits!",
+        "url": "https://www.linkedin.com/feed/update/789"
+    }
+]
