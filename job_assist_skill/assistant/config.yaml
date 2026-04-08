@@ -13,13 +13,9 @@ linkedin:
 # Search Settings
 search:
   roles:
-    - "software engineer"
-    - "full stack developer"
-    - "backend engineer"
+    - "target role"
   locations:
     - "Remote"
-    - "Dubai"
-    - "Riyadh"
   max_hours_age: 24
   posts_per_query: 10
   stream: "both"  # posts, jobs, or both

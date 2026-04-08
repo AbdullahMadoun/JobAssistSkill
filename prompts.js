@@ -103,7 +103,9 @@ Return ONE JSON object with EXACTLY this schema:
   ],
   "missing_from_cv": ["important job requirements not found anywhere in the CV"],
   "strongest_matches": ["top 3 strongest alignment points"],
-  "recommended_emphasis": ["skills or experiences worth surfacing more prominently"]
+  "recommended_emphasis": ["skills or experiences worth surfacing more prominently"],
+  "priority_gaps": ["highest-priority gaps to address in the next rewrite stage"],
+  "evidence_candidates": ["existing CV evidence threads that can be emphasized more strongly"]
 }
 
 Multi-dimensional scoring rubric:
@@ -153,6 +155,8 @@ Rules:
 - Do not recommend adding facts, years, employers, certifications, or numbers not already present.
 - overall_score should reflect fit for this role, not writing polish alone.
 - overall_verdict should be direct and evidence-based.
+- priority_gaps should be a short, ranked list of the biggest truthful rewrite targets.
+- evidence_candidates should name the strongest existing evidence threads already present in the CV that later edits should reuse.
 - Output valid JSON only.`;
 
 const ANALYZE_ALIGNMENT_USER = (parsedReq, latex) =>
@@ -211,11 +215,10 @@ Workflow:
 1. Read the alignment analysis and identify the biggest evidence gaps.
 2. Form a CV strategy first: decide which sections should stay prominent, which should be tightened, and which evidence gaps deserve the strongest bullet rewrites.
 3. Inspect every provided LaTeX source line in order.
-4. Return exactly one change object for every bullet or sentence in the provided source.
+4. Return exactly one change object for every row in the provided rewrite_inventory.
 5. Copy original_text character-for-character from the provided source.
 6. For bullet lines (\\item), choose between "edit" and "keep" based on value and the requested rewrite coverage target.
 7. Prioritize the bullets with the strongest truthful upside first; leave lower-value bullets as "keep" when appropriate.
-8. For non-bullet structural lines (section headers, formatting commands), set change_type to "keep" unless a meaningful improvement exists.
 9. Use the alignment priority_gaps and evidence_candidates as the default map for what to fix and where to fix it.
 
 ${HIGH_VALUE_REWRITE_IDEOLOGY}
@@ -271,7 +274,7 @@ IF uncertain about any constraint:
 - NEVER guess or approximate factual claims.
 
 Rules:
-- Every source line must be accounted for. Do not omit any bullet or sentence from the response.
+- Every rewrite_inventory row must be accounted for. Do not omit any target row from the response.
 - Return 3-6 strategic_recommendations that cover section emphasis, detail level, ordering, or what to trim/expand for this role.
 - original_text must be copied verbatim, including punctuation, spacing, and escaping.
 - edited_text should usually preserve the same LaTeX command wrapper as original_text.
@@ -389,7 +392,7 @@ const REVIEW_APPLIED_CV_USER = ({
 }) => `<job_requirements>\n${JSON.stringify(parsedReq || {}, null, 2)}\n</job_requirements>\n\n<job_metadata>\n${JSON.stringify(job || {}, null, 2)}\n</job_metadata>\n\n<run_context>\n${JSON.stringify(runContext || {}, null, 2)}\n</run_context>\n\n<original_cv>\n${String(originalCv || '').trim()}\n</original_cv>\n\n<accepted_cv>\n${String(acceptedCv || '').trim()}\n</accepted_cv>\n\n<original_metrics>\n${JSON.stringify(originalMetrics || {}, null, 2)}\n</original_metrics>\n\n<suggested_draft_metrics>\n${JSON.stringify(suggestedMetrics || {}, null, 2)}\n</suggested_draft_metrics>\n\n<accepted_draft_metrics>\n${JSON.stringify(acceptedMetrics || {}, null, 2)}\n</accepted_draft_metrics>\n\n<original_alignment_summary>\n${JSON.stringify(originalAlignment || {}, null, 2)}\n</original_alignment_summary>\n\n<accepted_alignment_summary>\n${JSON.stringify(acceptedAlignment || {}, null, 2)}\n</accepted_alignment_summary>\n\n<user_choices>\n${JSON.stringify(userChoices || {}, null, 2)}\n</user_choices>\n\nEvaluate whether the accepted draft improved relative to the original CV for this job, then return the required JSON.`;
 
 // -- COVER LETTER GENERATOR -----------------------------------------------
-const COVER_LETTER_SYSTEM = `You are a grounded cover letter writer for technical job applications.
+const COVER_LETTER_SYSTEM = `You are a grounded cover letter writer for job applications.
 
 Write only the body content for a short, specific cover letter that sounds credible and useful to the hiring team.
 
@@ -411,6 +414,7 @@ Rules:
 - Base every claim on the provided CV and alignment analysis only.
 - Lead with value, not enthusiasm.
 - Do not use cliches such as "I am excited to apply", "I believe I am a great fit", or other generic filler.
+- Never leave placeholders such as COMPANY1, [COMPANY], <ROLE>, or copied template markers in the output.
 - Keep the tone professional, confident, and human.
 - Reference specific tools, outcomes, or collaboration only when they are evidenced in the source material.
 - If the company name is unavailable, refer to "your team" or "the role" naturally.

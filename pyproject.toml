@@ -1,64 +1,62 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "job-assist-skill"
-version = "3.1.1"
-description = "AI-powered Career Assistant for LinkedIn: Search, Tailor, Apply"
+version = "3.2.0"
+description = "Agent-operated LinkedIn search skill with local prompt-driven CV tailoring"
 readme = "README.md"
-requires-python = ">=3.8"
-license = {text = "Apache 2.0"}
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
 authors = [
-    {name = "Abdullah Madoun", email = "your.email@example.com"}
+  { name = "Abdullah Madoun" }
 ]
-keywords = ["linkedin", "career-assistant", "job-search", "cv-tailoring", "ai-agent", "vibecoding"]
+keywords = ["linkedin", "job-search", "cv-tailoring", "agent-skill", "playwright"]
 classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Developers",
-    "Topic :: Software Development :: Libraries :: Python Modules",
-    "License :: OSI Approved :: Apache Software License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12"
 ]
-
 dependencies = [
-    "playwright>=1.40.0",
-    "requests>=2.31.0",
-    "lxml>=5.0.0",
-    "pydantic>=2.0.0",
-    "python-dotenv>=1.0.0",
-    "aiofiles>=23.0.0",
+  "aiofiles>=23.0.0",
+  "flask>=3.0.0",
+  "lxml>=5.0.0",
+  "playwright>=1.40.0",
+  "pydantic>=2.0.0",
+  "PyPDF2>=3.0.0",
+  "python-dotenv>=1.0.0",
+  "PyYAML>=6.0",
+  "requests>=2.31.0"
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0",
-    "pytest-cov>=4.0.0",
-    "build>=1.0.0",
-    "twine>=4.0.0",
-    "wheel>=0.40.0",
+  "pytest>=7.0.0",
+  "pytest-asyncio>=0.21.0",
+  "pytest-cov>=4.0.0",
+  "build>=1.0.0",
+  "twine>=4.0.0",
+  "wheel>=0.40.0"
 ]
 
 [project.urls]
 Homepage = "https://github.com/AbdullahMadoun/JobAssistSkill"
-Documentation = "https://github.com/AbdullahMadoun/JobAssistSkill#readme"
 Repository = "https://github.com/AbdullahMadoun/JobAssistSkill"
 Issues = "https://github.com/AbdullahMadoun/JobAssistSkill/issues"
 
-[tool.setuptools]
-packages = ["job_assist_skill", "job_assist_skill.assistant", "job_assist_skill.scraper"]
+[tool.setuptools.packages.find]
+include = ["job_assist_skill*"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
 addopts = "-ra -q --strict-markers"
-testpaths = []
+testpaths = ["tests"]
 markers = [
-    "unit: Unit tests that don't require external services",
-    "integration: Integration tests that require LinkedIn session",
+  "unit: Unit tests that do not require external services",
+  "integration: Tests that require a real LinkedIn session or browser login"
 ]

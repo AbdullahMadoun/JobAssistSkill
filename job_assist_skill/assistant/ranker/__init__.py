@@ -1,6 +1,6 @@
-"""Ranker module for job candidate ranking."""
+"""Ranking helpers for deterministic candidate prioritization."""
 
-from .keyword_scorer from job_assist_skill import keywords as kwcorer, JobRanker, get_keyword_scorer, get_job_ranker
+from .keyword_scorer import JobRanker, KeywordScorer, get_job_ranker, get_keyword_scorer
 
 __all__ = [
     "KeywordScorer",

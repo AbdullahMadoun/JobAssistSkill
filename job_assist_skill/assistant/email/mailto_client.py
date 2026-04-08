@@ -11,7 +11,7 @@ import subprocess
 import webbrowser
 from pathlib import Path
 from typing import List, Optional
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
 
 
 class MailtoClient:
@@ -74,9 +74,6 @@ class MailtoClient:
         Returns:
             mailto: URL string
         """
-        if not to:
-            raise ValueError("Recipient email (to) is required")
-        
         params = {}
         
         if subject:
@@ -91,11 +88,12 @@ class MailtoClient:
         if bcc:
             params["bcc"] = bcc
         
+        target = to.strip()
         if params:
             query = urlencode(params)
-            return f"mailto:{to}?{query}"
+            return f"mailto:{target}?{query}"
         else:
-            return f"mailto:{to}"
+            return f"mailto:{target}"
     
     def open_email(
         self,
@@ -179,6 +177,7 @@ class MailtoClient:
             "body": body,
             "cc": cc or None,
             "attachment": attachment_path or None,
+            "mailto_url": self.create_mailto_url(to=to, subject=subject, body=body, cc=cc),
             "from": {
                 "name": self.user_name,
                 "email": self.user_email,

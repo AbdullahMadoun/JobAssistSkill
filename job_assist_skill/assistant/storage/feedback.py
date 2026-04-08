@@ -54,8 +54,8 @@ class FeedbackStore:
             db_path: Path to SQLite database. Defaults to storage/feedback.db
         """
         if db_path is None:
-            repo_root = Path(__file__).parent.parent.parent
-            db_path = repo_root / "job_assist_skill.assistant" / "storage" / "feedback.db"
+            repo_root = Path(__file__).resolve().parents[3]
+            db_path = repo_root / ".job_assist" / "feedback.db"
 
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)

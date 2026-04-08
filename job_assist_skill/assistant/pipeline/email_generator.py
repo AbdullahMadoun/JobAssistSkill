@@ -1,45 +1,39 @@
-"""
-Email Generator for job applications.
+"""Generic local email draft generator for any job type."""
 
-Generates personalized job application emails based on job data
-and tailored CV/cover letter.
-"""
+from __future__ import annotations
 
+from dataclasses import dataclass, field
 import re
 from typing import Dict, List, Optional
-from dataclasses import dataclass
+
+
+PLACEHOLDER_PATTERNS = [
+    re.compile(r"\bcompany\s*\d+\b", re.IGNORECASE),
+    re.compile(r"\b(role|job|position|title)\s*\d+\b", re.IGNORECASE),
+    re.compile(r"\[(company|role|job|title|name)[^\]]*\]", re.IGNORECASE),
+    re.compile(r"<(company|role|job|title|name)[^>]*>", re.IGNORECASE),
+    re.compile(r"\b(company|role|job|title|name)[ _-]?(name|placeholder|here)\b", re.IGNORECASE),
+    re.compile(r"\b(insert|replace)\s+(company|role|job|title|name)\b", re.IGNORECASE),
+]
 
 
 @dataclass
 class ApplicationEmail:
-    """Generated application email."""
+    """A structured application email draft."""
+
     subject: str
     body: str
     to: str
     cc: Optional[str] = None
     bcc: Optional[str] = None
-    attachments: List[str] = None
+    attachments: List[str] = field(default_factory=list)
     body_is_html: bool = False
-
-    def __post_init__(self):
-        if self.attachments is None:
-            self.attachments = []
+    mailto_url: Optional[str] = None
+    warnings: List[str] = field(default_factory=list)
 
 
 class EmailGenerator:
-    """
-    Generates personalized job application emails.
-
-    Usage:
-        generator = EmailGenerator()
-        email = generator.generate_application_email(
-            job={"title": "Software Engineer", "company": "Microsoft"},
-            company={"name": "Microsoft", "industry": "Tech"},
-            recipient_email="careers@microsoft.com",
-            cv_path="./output/cv.pdf",
-            cover_letter_path="./output/cover_letter.pdf",
-        )
-    """
+    """Create neutral, reusable application email drafts."""
 
     def generate_application_email(
         self,
@@ -47,42 +41,34 @@ class EmailGenerator:
         company: Optional[Dict] = None,
         recipient_email: str = "",
         recipient_name: str = "",
-        sender_name: str = "Your Name",
-        sender_email: str = "your.email@example.com",
+        sender_name: str = "Candidate",
+        sender_email: str = "",
         cv_path: Optional[str] = None,
         cover_letter_path: Optional[str] = None,
         include_cover_letter: bool = True,
         template: str = "professional",
+        user_summary: str = "",
+        signature: str = "",
     ) -> ApplicationEmail:
-        """
-        Generate a job application email.
+        """Generate a professional email draft without domain assumptions."""
+        del template
+        warnings: List[str] = []
 
-        Args:
-            job: Job data dict with keys: title, company, location, description
-            company: Company data dict (optional)
-            recipient_email: HR/recruiter email
-            recipient_name: HR/recruiter name (optional)
-            sender_name: Your name
-            sender_email: Your email
-            cv_path: Path to tailored CV PDF
-            cover_letter_path: Path to cover letter PDF (optional)
-            include_cover_letter: Whether to include cover letter
-            template: Email template style
+        raw_company_name = (company or {}).get("name") or job.get("company") or ""
+        raw_job_title = job.get("title") or job.get("job_title") or "the role"
+        raw_location = job.get("location") or ""
+        raw_recipient_name = recipient_name or ""
 
-        Returns:
-            ApplicationEmail instance
-        """
-        # ELITE DATA VALIDATION: Reject generic mock strings
-        temp_company = company.get('name', '') if company else (job.get('company', ''))
-        company_name = temp_company if temp_company and "Company_" not in temp_company else ""
-        
-        temp_title = job.get('title', job.get('job_title', ''))
-        job_title = temp_title if temp_title and "Position" not in temp_title else "AI Engineering"
-        
-        location = job.get('location', job.get('job_location', ''))
+        company_name, company_warnings = self._sanitize_value(raw_company_name, field_name="company")
+        job_title, job_warnings = self._sanitize_value(raw_job_title, fallback="the role", field_name="job_title")
+        location, _ = self._sanitize_value(raw_location, field_name="location")
+        recipient_name, recipient_warnings = self._sanitize_value(raw_recipient_name, field_name="recipient_name")
+
+        warnings.extend(company_warnings)
+        warnings.extend(job_warnings)
+        warnings.extend(recipient_warnings)
 
         subject = self._build_subject(job_title, company_name)
-
         body = self._build_body(
             job_title=job_title,
             company_name=company_name,
@@ -90,196 +76,92 @@ class EmailGenerator:
             recipient_name=recipient_name,
             sender_name=sender_name,
             sender_email=sender_email,
-            template=template,
+            user_summary=user_summary,
+            signature=signature,
         )
 
-        attachments = []
+        attachments: List[str] = []
         if cv_path:
             attachments.append(cv_path)
         if cover_letter_path and include_cover_letter:
             attachments.append(cover_letter_path)
 
-        cc = None
-        if cover_letter_path and include_cover_letter:
-            cc = sender_email
-
         return ApplicationEmail(
             subject=subject,
             body=body,
             to=recipient_email,
-            cc=cc,
+            cc=sender_email or None,
             attachments=attachments,
-            body_is_html=False,
+            warnings=warnings,
         )
 
+    def _sanitize_value(
+        self,
+        value: str,
+        *,
+        fallback: str = "",
+        field_name: str,
+    ) -> tuple[str, List[str]]:
+        cleaned = " ".join((value or "").split()).strip()
+        if not cleaned:
+            return fallback, []
+
+        if self._looks_like_placeholder(cleaned):
+            return fallback, [f"placeholder_{field_name}_removed"]
+
+        return cleaned, []
+
+    def _looks_like_placeholder(self, value: str) -> bool:
+        cleaned = " ".join((value or "").split()).strip()
+        if not cleaned:
+            return False
+        return any(pattern.search(cleaned) for pattern in PLACEHOLDER_PATTERNS)
+
     def _build_subject(self, job_title: str, company_name: str) -> str:
-        """Build email subject line."""
-        clean_title = self._clean_text(job_title)
+        title = " ".join(job_title.split()).strip()
         if company_name:
-            return f"Application for {clean_title} at {company_name}"
-        return f"Application for {clean_title}"
+            return f"Application for {title} at {company_name}"
+        return f"Application for {title}"
 
     def _build_body(
         self,
+        *,
         job_title: str,
         company_name: str,
         location: str,
         recipient_name: str,
         sender_name: str,
         sender_email: str,
-        template: str,
+        user_summary: str,
+        signature: str,
     ) -> str:
-        """Build email body text."""
-        greeting = self._build_greeting(recipient_name)
-        introduction = self._build_introduction(job_title, company_name, location, sender_name)
-        value_proposition = self._build_value_proposition(job_title, company_name)
-        closing = self._build_closing(sender_name, sender_email)
-
-        body = f"""{greeting}
-
-{introduction}
-
-{value_proposition}
-
-I have attached my CV for your review. I would welcome the opportunity to discuss how my skills and experience align with {company_name or 'this role'}'s needs.
-
-{closing}
-
-Best regards,
-{sender_name}"""
-
-        return body
-
-    def _build_greeting(self, recipient_name: str) -> str:
-        """Build email greeting."""
-        if recipient_name and recipient_name.strip():
-            # Handle "First Last" -> "First" for a personal touch
-            first_name = recipient_name.strip().split()[0]
-            return f"Dear {first_name},"
-        return "Dear Hiring Manager,"
-
-    def _build_introduction(
-        self,
-        job_title: str,
-        company_name: str,
-        location: str,
-        sender_name: str,
-    ) -> str:
-        """Build introduction paragraph."""
-        name_parts = sender_name.split()
-        first_name = name_parts[0] if name_parts else sender_name
-
-        location_part = f" in {location}" if location else ""
+        greeting = f"Dear {recipient_name.split()[0]}," if recipient_name.strip() else "Dear Hiring Team,"
         company_part = f" at {company_name}" if company_name else ""
-
+        location_part = f" in {location}" if location else ""
+        summary = user_summary.strip()
+        summary_line = (
+            f"{summary}\n\n"
+            if summary
+            else "I believe my background and recent work align well with the requirements of this opportunity.\n\n"
+        )
+        contact_line = f"\nYou can reach me at {sender_email}." if sender_email else ""
+        closing = signature.strip() if signature.strip() else f"Best regards,\n{sender_name}"
         return (
-            f"I am writing to express my strong interest in the {job_title} "
-            f"position{company_part}{location_part}. "
-            f"As a final-year Software Engineering student with a strong academic background "
-            f"and specialization in AI/ML, I am excited about opportunities where "
-            f"I can contribute to meaningful projects."
-        )
-
-    def _build_value_proposition(
-        self,
-        job_title: str,
-        company_name: str,
-    ) -> str:
-        """Build value proposition paragraph."""
-        value_props = []
-
-        if any(kw in job_title.lower() for kw in ['software', 'engineer', 'developer']):
-            value_props.append(
-                "My experience building end-to-end computer vision pipelines, "
-                "implementing few-shot classification systems, and working with "
-                "modern ML frameworks (PyTorch, TensorFlow, scikit-learn) has given "
-                "me strong foundations in production-quality development."
-            )
-
-        if any(kw in job_title.lower() for kw in ['data', 'ml', 'ai', 'machine learning']):
-            value_props.append(
-                "I have hands-on experience with the full ML lifecycle—from data "
-                "preprocessing and model training to evaluation and optimization. "
-                "My recent work includes building high-performance computer vision "
-                "pipelines for real-world applications."
-            )
-
-        if 'analyst' in job_title.lower():
-            value_props.append(
-                "Through my previous experience, I developed fraud risk metrics "
-                "that flagged hundreds of high-probability cases and built semantic "
-                "text-matching tools that cut manual tasks from weeks to minutes."
-            )
-
-        if not value_props:
-            value_props.append(
-                "I bring strong technical skills in Python, Java, and SQL, "
-                "along with practical experience in Docker, FastAPI, and CI/CD pipelines. "
-                "I am a quick learner who thrives in collaborative environments."
-            )
-
-        return value_props[0]
-
-    def _build_closing(self, sender_name: str, sender_email: str) -> str:
-        """Build email closing."""
-        return f"I can be reached at {sender_email}"
-
-    def _clean_text(self, text: str) -> str:
-        """Clean text for use in subject lines."""
-        text = text.strip()
-        text = re.sub(r'\s+', ' ', text)
-        return text
-
-    def generate_follow_up_email(
-        self,
-        original_email: ApplicationEmail,
-        days_since: int = 5,
-    ) -> ApplicationEmail:
-        """
-        Generate a follow-up email for a previously sent application.
-
-        Args:
-            original_email: The original application email
-            days_since: Days since the original application
-
-        Returns:
-            New ApplicationEmail for follow-up
-        """
-        subject = f"Following Up: {original_email.subject}"
-
-        body = f"""Dear Hiring Manager,
-
-I hope this message finds you well. I wanted to follow up on my application
-for the position referenced in the subject line, which I submitted approximately
-{days_since} days ago.
-
-I remain very interested in this opportunity and would love to discuss how
-my skills in AI/ML and software engineering could contribute to your team.
-Please let me know if there is any additional information I can provide.
-
-Thank you for your time and consideration.
-
-Best regards,
-{self._extract_sender_name(original_email.body)}"""
-
-        return ApplicationEmail(
-            subject=subject,
-            body=body,
-            to=original_email.to,
-            cc=original_email.cc,
-        )
-
-    def _extract_sender_name(self, body: str) -> str:
-        """Extract sender name from email body."""
-        match = re.search(r'Best regards,\s*\n?\s*([^\n]+)', body)
-        return match.group(1).strip() if match else "Your Name"
+            f"{greeting}\n\n"
+            f"I am writing to express my interest in the {job_title} position{company_part}{location_part}.\n\n"
+            f"{summary_line}"
+            "I have attached my CV for review and would welcome the opportunity to discuss how my experience "
+            "matches the role.\n"
+            f"{contact_line}\n\n"
+            f"{closing}"
+        ).strip()
 
 
 _default_generator: Optional[EmailGenerator] = None
 
 
 def get_email_generator() -> EmailGenerator:
-    """Get singleton email generator instance."""
+    """Get a singleton email generator instance."""
     global _default_generator
     if _default_generator is None:
         _default_generator = EmailGenerator()

@@ -17,6 +17,7 @@ class Post(BaseModel):
     author_url: Optional[str] = None
     company_name: Optional[str] = None
     locations: List[str] = Field(default_factory=list)
+    contact_emails: List[str] = Field(default_factory=list)
     
     def to_dict(self) -> Dict[str, Any]:
         return self.model_dump()

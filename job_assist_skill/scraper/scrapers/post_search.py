@@ -33,7 +33,10 @@ HIRING_KEYWORDS = [
     "we're hiring", "we are hiring", "now hiring", "join our team",
     "looking for", "open position", "job opening", "hiring soon",
     "career opportunity", "recruiting", "vacancy", "#hiring",
+    "مطلوب", "توظيف", "فرصة عمل", "انضم", "ارسال السيرة", "send cv",
 ]
+
+EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", re.IGNORECASE)
 
 
 class PostSearchScraper(BaseScraper):
@@ -83,6 +86,7 @@ class PostSearchScraper(BaseScraper):
         keywords: str,
         limit: int = 25,
         filter_hiring: bool = True,
+        email_only: bool = False,
         min_posts: int = 5,
         max_time_seconds: int = 180,
         scroll_pause_min: float = 0.8,
@@ -119,7 +123,15 @@ class PostSearchScraper(BaseScraper):
         except Exception as e:
             logger.warning(f"Navigation issue: {e}")
 
-        await asyncio.sleep(7)
+        try:
+            await self.page.wait_for_selector(
+                'div[role="listitem"], a[href*="/jobs/view/"], a[href*="/feed/update/"]',
+                timeout=5000,
+            )
+        except Exception:
+            pass
+
+        await asyncio.sleep(2)
 
         await self.callback.on_progress("Page loaded", 10)
 
@@ -141,7 +153,15 @@ class PostSearchScraper(BaseScraper):
             posts = await self._extract_posts_from_page(seen_urls)
 
             if filter_hiring:
-                posts = [p for p in posts if self._is_hiring_post(p.text or "")]
+                posts = [
+                    post for post in posts
+                    if self._is_hiring_post(post.text or "")
+                    or "/jobs/view/" in (post.linkedin_url or "")
+                    or bool(post.contact_emails)
+                ]
+
+            if email_only:
+                posts = [post for post in posts if post.contact_emails]
 
             new_count = 0
             for post in posts:
@@ -197,6 +217,7 @@ class PostSearchScraper(BaseScraper):
                 continue
 
             locations = self._extract_locations(text)
+            contact_emails = self._extract_emails(text)
 
             # Extract author name from URL if not found or generic
             author_name = data.get('authorName', '')
@@ -225,6 +246,7 @@ class PostSearchScraper(BaseScraper):
                 author_url=author_url,
                 company_name=MetadataCleaner.clean_company_name(data.get('companyName', '')),
                 locations=locations,
+                contact_emails=contact_emails,
             )
             posts.append(post)
 
@@ -317,11 +339,18 @@ class PostSearchScraper(BaseScraper):
                 '[class*="sub-description"]',
                 '[class*="actor__sub-description"]'
             ];
-            
-                    // Clean remaining junk (time, mutual connections, etc.)
-                    // MetadataCleaner is accessible in JS context if passed, but for now we'll 
-                    // use the Python-side cleaner after extraction for ultimate precision.
-                    companyName = co;
+
+            for (const sel of companySelectors) {
+                const coEl = el.querySelector(sel);
+                if (coEl && !companyName) {
+                    let coText = (coEl.innerText || '').replace(/\s+/g, ' ').trim();
+                    if (!coText) continue;
+                    coText = coText.split(' • ')[0].trim();
+                    if (coText && coText !== authorName && coText.length < 120) {
+                        companyName = coText;
+                    }
+                }
+            }
 
             // Extract URN/URL
             let urn = el.getAttribute('data-urn') || '';
@@ -499,6 +528,18 @@ class PostSearchScraper(BaseScraper):
         
         return locations
 
+    def _extract_emails(self, text: str) -> List[str]:
+        """Extract contact emails from post text."""
+        if not text:
+            return []
+        matches = [match.group(0).strip(".,;:") for match in EMAIL_PATTERN.finditer(text)]
+        unique: List[str] = []
+        for email in matches:
+            lowered = email.lower()
+            if lowered not in [item.lower() for item in unique]:
+                unique.append(email)
+        return unique
+
     def _extract_name_from_url(self, url: str) -> str:
         """Extract author name from LinkedIn profile URL.
         
@@ -573,8 +614,9 @@ class HiringPostSearcher:
         posts_per_query: int = 10,
         min_posts: int = 5,
         max_time_per_query: int = 90,
-        delay_between_queries: float = 5.0,
+        delay_between_queries: float = 2.0,
         max_hours_age: Optional[int] = None,
+        email_only: bool = False,
     ) -> List[Post]:
         """
         Search for hiring posts across multiple queries.
@@ -606,6 +648,7 @@ class HiringPostSearcher:
                 keywords=query,
                 limit=posts_per_query,
                 filter_hiring=True,
+                email_only=email_only,
                 min_posts=min(3, posts_per_query),
                 max_time_seconds=max_time_per_query,
                 max_hours_age=max_hours_age,

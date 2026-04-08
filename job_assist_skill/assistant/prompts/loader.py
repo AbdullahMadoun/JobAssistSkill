@@ -28,7 +28,7 @@ class PromptLoader:
             prompts_path: Path to prompts.js. Defaults to repo root.
         """
         if prompts_path is None:
-            repo_root = Path(__file__).parent.parent.parent
+            repo_root = Path(__file__).resolve().parents[3]
             prompts_path = repo_root / "prompts.js"
 
         self.prompts_path = Path(prompts_path)
@@ -52,6 +52,17 @@ class PromptLoader:
             name = match.group(1)
             value = match.group(2) or match.group(3) or match.group(4)
             prompts[name] = value
+
+        # Resolve simple template references such as ${HIGH_VALUE_REWRITE_IDEOLOGY}
+        template_ref = re.compile(r"\$\{([A-Z0-9_]+)\}")
+        changed = True
+        while changed:
+            changed = False
+            for name, value in list(prompts.items()):
+                resolved = template_ref.sub(lambda ref: prompts.get(ref.group(1), ref.group(0)), value)
+                if resolved != value:
+                    prompts[name] = resolved
+                    changed = True
 
         return prompts
 

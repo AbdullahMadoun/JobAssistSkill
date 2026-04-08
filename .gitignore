@@ -34,6 +34,7 @@ debug_*.py
 
 # Session files (sensitive cookies)
 linkedin_session.json
+.job_assist/
 
 # Build artifacts
 MANIFEST
@@ -46,6 +47,7 @@ dist-basic/
 
 # Career Assistant artifacts
 output/
+.job_assist/
 *.pdf
 *.aux
 *.out

@@ -1,474 +1,708 @@
 #!/usr/bin/env python
-"""
-Career Assistant CLI - Main entry point for the career assistant skill.
+"""Agent-controlled CLI for dual-stream scraping and local CV workflows."""
 
-Usage:
-    python main.py search "software engineer" --location "Remote"
-    python main.py tailor --job-text "We're hiring..." --cv cv_template.tex
-    python main.py email --job "Software Engineer" --company "Company Name"
-    python main.py run --roles "Python Developer" --companies "Microsoft,Google"
-"""
+from __future__ import annotations
 
 import argparse
 import asyncio
 import json
-import os
+import logging
 import sys
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent))
+from job_assist_skill import keywords as kw
+from job_assist_skill.assistant import (
+    CVAlignment,
+    CVReplacer,
+    CVTailoringPipeline,
+    CareerAssistant,
+    CoverLetterGenerator,
+    FeedbackStore,
+)
+from job_assist_skill.scraper import (
+    BrowserManager,
+    is_logged_in,
+    load_credentials_from_env,
+    login_with_credentials,
+    wait_for_manual_login,
+)
 
 
-async def cmd_search(args):
-    """Search for jobs/hiring posts."""
-    from job_assist_skill.scraper import BrowserManager, HiringPostSearcher
-    from job_assist_skill import keywords as kw as kw
-    
-    session_path = args.session or "linkedin_session.json"
-    if not os.path.exists(session_path):
-        print(f"ERROR: Session file not found: {session_path}")
-        print("Run: python main.py login")
-        return 1
-    
-    # Handle --list-presets
+def _csv_to_list(value: Optional[str]) -> List[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _read_text_arg(text_value: Optional[str], file_value: Optional[str], label: str) -> str:
+    if text_value:
+        return text_value
+    if file_value:
+        return Path(file_value).read_text(encoding="utf-8")
+    raise ValueError(f"Provide --{label}-text or --{label}-file")
+
+
+def _read_json(path: str) -> Dict[str, Any]:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _write_json(payload: Any, path: Optional[str] = None) -> Optional[Path]:
+    rendered = json.dumps(payload, indent=2, ensure_ascii=False)
+    if not path:
+        print(rendered)
+        return None
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(rendered, encoding="utf-8")
+    print(f"Saved {output}")
+    return output
+
+
+def _prompt_payload(
+    *,
+    stage: str,
+    prompt: Dict[str, str],
+    expected_output: str,
+    quality_checks: List[str],
+    suggested_output: str,
+) -> Dict[str, Any]:
+    return {
+        "stage": stage,
+        "system": prompt["system"],
+        "user": prompt["user"],
+        "expected_output": expected_output,
+        "quality_checks": quality_checks,
+        "suggested_output_file": suggested_output,
+    }
+
+
+async def cmd_search(args: argparse.Namespace) -> int:
+    assistant = CareerAssistant(memory_path=args.memory_path, output_dir=args.output_dir)
+
     if args.list_presets:
-        print("Available presets from keywords.py:")
-        for name, config in kw.QUICK_SEARCHES.items():
-            roles_str = ",".join(config.get("roles", []))
-            locs_str = ",".join(config.get("locations", []))
-            print(f"  {name}: roles={roles_str}, locations={locs_str}")
+        for name, config in sorted(kw.QUICK_SEARCHES.items()):
+            roles = ",".join(config.get("roles", []))
+            locations = ",".join(config.get("locations", []))
+            print(f"{name}: roles={roles} | locations={locations}")
         return 0
-    
-    # Build search queries
+
+    memory_roles = assistant.memory.get_value("search.roles", []) or []
+    memory_locations = assistant.memory.get_value("search.locations", []) or []
+    memory_companies = assistant.memory.get_value("search.companies", []) or []
+
+    roles = []
+    locations = _csv_to_list(args.locations or args.location) or list(memory_locations)
+    companies = _csv_to_list(args.companies) or list(memory_companies)
+
     if args.preset:
         if args.preset not in kw.QUICK_SEARCHES:
-            print(f"ERROR: Unknown preset '{args.preset}'")
-            print("Use --list-presets to see available presets")
+            print(f"Unknown preset: {args.preset}", file=sys.stderr)
             return 1
-        config = kw.QUICK_SEARCHES[args.preset]
-        role_list = config.get("roles", [])
-        loc_list = config.get("locations", [])
-        print(f"Using preset: {args.preset}")
-        print(f"Roles: {role_list}")
-        print(f"Locations: {loc_list}")
-    elif args.roles:
-        role_list = args.roles.split(',')
-        loc_list = args.location.split(',') if args.location else None
-    elif args.keywords:
-        role_list = [args.keywords]
-        loc_list = args.location.split(',') if args.location else None
-    else:
-        print("ERROR: Provide keywords, --preset, or --roles")
+        preset = kw.QUICK_SEARCHES[args.preset]
+        roles.extend(preset.get("roles", []))
+        if not locations:
+            locations = preset.get("locations", [])
+
+    if args.query:
+        roles.append(args.query)
+    roles.extend(_csv_to_list(args.roles))
+
+    if not roles:
+        roles.extend(memory_roles)
+
+    if not roles:
+        print("Provide a query, --roles, or --preset.", file=sys.stderr)
         return 1
-    
-    # Convert role categories to actual keywords
-    roles_to_search = []
-    for r in role_list:
-        if r in kw.ROLES:
-            roles_to_search.extend(kw.ROLES[r][:3])
-        else:
-            roles_to_search.append(r)
-    
-    # Convert location categories to actual keywords
-    locs_to_search = None
-    if loc_list:
-        locs_to_search = []
-        for l in loc_list:
-            if l in kw.LOCATIONS:
-                locs_to_search.extend(kw.LOCATIONS[l][:2])
-            else:
-                locs_to_search.append(l)
-    
-    print(f"Searching for: {roles_to_search[:3]}...")
-    if locs_to_search:
-        print(f"Locations: {locs_to_search[:3]}")
-    
-    async with BrowserManager(headless=args.headless, stealth=True) as browser:
-        await browser.load_session(session_path)
-        await asyncio.sleep(2)
-        
-        searcher = HiringPostSearcher(browser.page)
-        
-        posts = await searcher.search_for_hiring(
-            roles=roles_to_search[:5],
-            companies=args.companies.split(',') if args.companies else None,
-            locations=locs_to_search,
-            posts_per_query=args.limit,
+
+    try:
+        results = await assistant.search(
+            roles=roles,
+            locations=locations,
+            companies=companies,
+            stream=args.stream,
+            limit=args.limit,
             min_posts=args.min_posts,
-            max_time_per_query=args.timeout,
+            timeout=args.timeout,
             max_hours_age=args.hours,
+            session_path=args.session,
+            headless=args.headless,
+            expand_job_details=not args.no_job_details,
+            email_only_posts=args.email_only_posts,
         )
-        
-        print(f"\n=== Found {len(posts)} hiring posts ===\n")
-        
-        for i, post in enumerate(posts[:args.limit]):
-            print(f"[{i+1}] {post.company_name or 'Unknown Company'}")
-            print(f"    URL: {post.linkedin_url}")
-            print(f"    Text: {(post.text or '')[:150]}...")
-            print(f"    Locations: {post.locations}")
-            print(f"    Date: {post.posted_date}")
-            print()
-        
-        if args.output:
-            with open(args.output, 'w') as f:
-                json.dump([{
-                    'company': p.company_name,
-                    'url': p.linkedin_url,
-                    'text': p.text,
-                    'locations': p.locations,
-                    'date': p.posted_date,
-                    'author': p.author_name,
-                } for p in posts], f, indent=2)
-            print(f"Saved results to {args.output}")
-        
-    return 0
-
-
-def cmd_tailor(args):
-    """Prepare CV tailoring (generates prompts for LLM)."""
-    from job_assist_skill.assistant import CVTailoringPipeline
-    
-    if args.job_file:
-        job_text = Path(args.job_file).read_text(encoding='utf-8')
-    elif args.job_text:
-        job_text = args.job_text
-    else:
-        print("ERROR: Provide --job-text or --job-file")
+    except Exception as exc:
+        print(f"Search failed: {exc}", file=sys.stderr)
         return 1
-    
-    if args.cv_file:
-        cv_latex = Path(args.cv_file).read_text(encoding='utf-8')
-    else:
-        cv_path = Path(__file__).parent / "cv_template.tex"
-        if cv_path.exists():
-            cv_latex = cv_path.read_text(encoding='utf-8')
-        else:
-            print(f"ERROR: CV template not found: {cv_path}")
-            print("Please provide --cv-file or create cv_template.tex")
-            return 1
-    
-    print("Preparing CV tailoring context...")
-    
-    pipeline = CVTailoringPipeline()
-    result = pipeline.prepare(job_text, cv_latex, output_dir=args.output or "output")
-    
-    if result.success:
-        print(f"SUCCESS: Tailoring context prepared")
-        print(f"  Session ID: {result.context.tailoring_session_id}")
-        print(f"  LaTeX saved to: {result.latex_path}")
-        print(f"\nNext: Send the alignment_prompt to LLM and call apply_llm_results()")
-        
-        if args.save_context:
-            ctx_path = os.path.join(args.output or "output", f"context_{result.context.tailoring_session_id}.json")
-            with open(ctx_path, 'w') as f:
-                json.dump({
-                    'session_id': result.context.tailoring_session_id,
-                    'alignment_prompt': result.context.alignment_prompt,
-                    'job_requirements': result.context.job_requirements,
-                }, f, indent=2)
-            print(f"  Context saved to: {ctx_path}")
-    else:
-        print(f"ERROR: {result.error}")
-        return 1
-    
-    return 0
 
-
-def cmd_compile(args):
-    """Compile LaTeX to PDF."""
-    from job_assist_skill.assistant import LaTeXCompiler
-    
-    if not args.latex_file:
-        print("ERROR: Provide --latex-file")
-        return 1
-    
-    latex = Path(args.latex_file).read_text(encoding='utf-8')
-    output = args.output or args.latex_file.replace('.tex', '.pdf')
-    
-    print(f"Compiling {args.latex_file} to {output}...")
-    
-    compiler = LaTeXCompiler()
-    result = compiler.compile_one_page(latex, output)
-    
-    if result['success']:
-        print(f"SUCCESS: PDF created at {result['pdf_path']} ({result['pages']} page(s))")
-        if result.get('issues'):
-            print(f"Issues: {result['issues']}")
-    else:
-        print(f"ERROR: Compilation failed: {result.get('issues')}")
-        return 1
-    
-    return 0
-
-
-def cmd_email(args):
-    """Generate application email."""
-    from job_assist_skill.assistant import EmailGenerator
-    
-    generator = EmailGenerator()
-    
-    email = generator.generate_application_email(
-        job={
-            "title": args.job or "Position",
-            "company": args.company or "Company",
-            "location": args.location or "",
-        },
-        recipient_email=args.to or "",
-        cv_path=args.cv,
-    )
-    
-    print(f"Subject: {email.subject}")
-    print(f"To: {email.to}")
-    if email.cc:
-        print(f"CC: {email.cc}")
-    print(f"\n--- Email Body ---\n{email.body}\n---")
-    
+    payload = [result.to_dict() for result in results]
     if args.output:
-        email_data = {
-            "subject": email.subject,
-            "body": email.body,
-            "to": email.to,
-            "cc": email.cc,
-        }
-        with open(args.output, 'w') as f:
-            json.dump(email_data, f, indent=2)
-        print(f"Email saved to {args.output}")
-    
+        assistant.save_search_results(results, args.output)
+    else:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    if results:
+        best = results[0]
+        print(
+            "Top result: "
+            f"source={best.source} | title={best.title or 'Untitled'} | "
+            f"company={best.company or 'Unknown'} | score={best.match_score} | "
+            f"next={best.next_action} | url={best.url}"
+        )
     return 0
 
 
-def cmd_ui(args):
-    """Start the web UI."""
-    from job_assist_skill.assistant.ui.app import create_app
-    from job_assist_skill.assistant import FeedbackStore
-    
-    output_dir = args.output or "output"
-    os.makedirs(output_dir, exist_ok=True)
-    
-    cv_template = Path(__file__).parent / "cv_template.tex"
-    
-    feedback_store = FeedbackStore() if args.learn else None
-    
-    app = create_app(
-        output_dir=output_dir,
-        cv_latex_template=str(cv_template) if cv_template.exists() else None,
-        feedback_store=feedback_store,
-    )
-    
-    print(f"Starting UI at http://localhost:{args.port}")
-    print(f"Output directory: {output_dir}")
-    app.run(host='0.0.0.0', port=args.port, debug=not args.production)
+async def cmd_login(args: argparse.Namespace) -> int:
+    assistant = CareerAssistant(memory_path=args.memory_path)
+    session_path = Path(args.session or assistant.memory.get_value("files.linkedin_session", "linkedin_session.json"))
+    if not session_path.is_absolute():
+        session_path = assistant.repo_root / session_path
+    session_path.parent.mkdir(parents=True, exist_ok=True)
 
-
-async def cmd_login(args):
-    """Login to LinkedIn and save session."""
-    from job_assist_skill.scraper import BrowserManager, wait_for_manual_login, save_session
-    
     print("Opening LinkedIn login page...")
     async with BrowserManager(headless=False, stealth=True) as browser:
-        page = browser.page
-        await page.goto("https://www.linkedin.com/login", wait_until="domcontentloaded")
-        
-        print("Please log in manually in the browser window...")
-        await wait_for_manual_login(page, timeout=300)
-        
-        session_path = args.session or "linkedin_session.json"
-        await browser.save_session(session_path)
-        print(f"Session saved to {session_path}")
-    
+        if session_path.exists() and not args.force:
+            try:
+                await browser.load_session(str(session_path))
+                await browser.page.goto("https://www.linkedin.com/feed/", wait_until="domcontentloaded")
+                if await is_logged_in(browser.page):
+                    try:
+                        session_value = str(session_path.relative_to(assistant.repo_root))
+                    except ValueError:
+                        session_value = str(session_path)
+                    assistant.memory.remember_files(linkedin_session=session_value)
+                    print(f"Existing LinkedIn session is still valid: {session_path}")
+                    return 0
+            except Exception:
+                pass
+        if args.auto:
+            email, password = load_credentials_from_env()
+            if not email or not password:
+                print("No LinkedIn credentials found in .env/environment.", file=sys.stderr)
+                return 1
+            print("Attempting automatic login using environment credentials...")
+            await login_with_credentials(browser.page, email=email, password=password, warm_up=True)
+        else:
+            await browser.page.goto("https://www.linkedin.com/login", wait_until="domcontentloaded")
+            print("Complete login manually in the browser window.")
+            await wait_for_manual_login(browser.page, timeout=args.timeout * 1000)
+        await browser.save_session(str(session_path))
+
+    try:
+        session_value = str(session_path.relative_to(assistant.repo_root))
+    except ValueError:
+        session_value = str(session_path)
+    assistant.memory.remember_files(linkedin_session=session_value)
+    print(f"Session saved to {session_path}")
     return 0
 
 
-async def cmd_demo(args):
-    """Run a demo of the full workflow."""
-    from job_assist_skill.scraper import BrowserManager, HiringPostSearcher
-    from job_assist_skill.assistant import CVTailoringPipeline, LaTeXCompiler, EmailGenerator
-    
-    session_path = args.session or "linkedin_session.json"
-    if not os.path.exists(session_path):
-        print(f"ERROR: Session file not found: {session_path}")
-        return 1
-    
-    cv_path = Path(__file__).parent / "cv_template.tex"
-    if not cv_path.exists():
-        print(f"ERROR: CV file not found: {cv_path}")
-        return 1
-    
-    print("=== Career Assistant Demo ===\n")
-    
-    # Step 1: Search
-    print("Step 1: Searching LinkedIn for hiring posts...")
-    async with BrowserManager(headless=args.headless, stealth=True) as browser:
-        await browser.load_session(session_path)
-        await asyncio.sleep(2)
-        
-        searcher = HiringPostSearcher(browser.page)
-        posts = await searcher.search_for_hiring(
-            roles=["software engineer"],
-            posts_per_query=5,
-            min_posts=3,
-            max_hours_age=24,
+def cmd_tailor_prepare(args: argparse.Namespace) -> int:
+    assistant = CareerAssistant(memory_path=args.memory_path, output_dir=args.output_dir)
+    try:
+        job_text = _read_text_arg(args.job_text, args.job_file, "job")
+        result = assistant.prepare_tailoring(
+            job_text=job_text,
+            cv_path=args.cv_file,
+            output_dir=args.output_dir,
         )
-    
-    print(f"Found {len(posts)} posts\n")
-    
-    if not posts:
-        print("No posts found. Try running with more time or different keywords.")
-        return 0
-    
-    # Step 2: Pick first post and prepare tailoring
-    post = posts[0]
-    print(f"Step 2: Preparing CV tailoring for: {post.company_name or 'Unknown'}")
-    
-    job_text = post.text or ""
-    cv_latex = cv_path.read_text(encoding='utf-8')
-    
-    pipeline = CVTailoringPipeline()
-    result = pipeline.prepare(job_text, cv_latex, output_dir="output")
-    
-    if not result.success:
-        print(f"ERROR: {result.error}")
+    except Exception as exc:
+        print(f"Tailoring preparation failed: {exc}", file=sys.stderr)
         return 1
-    
-    print(f"  Session ID: {result.context.tailoring_session_id}")
-    print(f"  Alignment prompt length: {len(result.context.alignment_prompt)} chars")
-    print(f"\n  (In production, you would send alignment_prompt to LLM here)")
-    
-    # Step 3: Show what LLM output would look like
-    print("\nStep 3: Simulating LLM response...")
-    sample_alignment = {
-        "overall_score": 65,
-        "sections": [
-            {"name": "Experience", "scoring": {"overall": 60}},
-            {"name": "Skills", "scoring": {"overall": 70}},
-        ]
-    }
-    sample_changes = [
-        {
-            "change_type": "keep",
-            "section_name": "Experience",
-            "original_text": "",
-            "edited_text": "",
-        }
-    ]
-    
-    tailored_latex = pipeline.apply_llm_results(
-        result.context,
-        sample_alignment,
-        sample_changes,
-        cv_latex,
-    )
-    print(f"  Applied {len(sample_changes)} changes")
-    
-    # Step 4: Compile
-    print("\nStep 4: Compiling to PDF...")
-    os.makedirs("output", exist_ok=True)
-    compiler = LaTeXCompiler()
-    compile_result = compiler.compile_one_page(tailored_latex, "output/demo_cv.pdf")
-    
-    if compile_result['success']:
-        print(f"  PDF created: {compile_result['pdf_path']} ({compile_result['pages']} page(s))")
-    else:
-        print(f"  PDF compilation issues: {compile_result.get('issues')}")
-    
-    # Step 5: Generate email
-    print("\nStep 5: Generating application email...")
-    generator = EmailGenerator()
-    email = generator.generate_application_email(
-        job={"title": "Software Engineer", "company": post.company_name or "Company"},
-        cv_path="output/demo_cv.pdf" if compile_result['success'] else None,
-    )
-    print(f"  Subject: {email.subject}")
-    print(f"  Body preview: {email.body[:200]}...")
-    
-    print("\n=== Demo Complete ===")
+
+    if not result.success:
+        print(result.error, file=sys.stderr)
+        return 1
+
+    if args.context_out and result.context:
+        Path(args.context_out).write_text(
+            json.dumps(result.context.__dict__, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        print(f"Saved {args.context_out}")
+
+    print(f"Context: {result.context_path}")
+    print(f"Source CV: {result.latex_path}")
     return 0
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Career Assistant - Job search and CV tailoring")
-    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
-    subparsers = parser.add_subparsers(dest="command", help="Commands")
+def cmd_tailor_alignment(args: argparse.Namespace) -> int:
+    assistant = CareerAssistant(memory_path=args.memory_path)
+    cv_path = assistant.resolve_cv_path(args.cv_file)
+    cv_latex = cv_path.read_text(encoding="utf-8")
+    parsed_job = _read_json(args.parsed_job)
+    prompt = CVTailoringPipeline().build_alignment_prompt(parsed_job=parsed_job, cv_latex=cv_latex)
+    payload = _prompt_payload(
+        stage="alignment",
+        prompt=prompt,
+        expected_output=(
+            "One JSON object with overall_score, overall_verdict, sections, missing_from_cv, "
+            "strongest_matches, recommended_emphasis, priority_gaps, and evidence_candidates."
+        ),
+        quality_checks=[
+            "Return valid JSON only.",
+            "Use only evidence already present in the CV and parsed job posting.",
+            "Review every meaningful bullet or line in the CV before scoring.",
+            "Never invent skills, certifications, employers, dates, or metrics.",
+        ],
+        suggested_output="alignment.json",
+    )
+    _write_json(payload, args.output)
+    return 0
 
-    # Search command
-    search_parser = subparsers.add_parser("search", help="Search for hiring posts")
-    search_parser.add_argument("keywords", nargs="?", help="Search keywords (or use --preset)")
-    search_parser.add_argument("--preset", "-p", help="Use preset from keywords.py (remote_software, us_tech, gulf_tech, etc.)")
-    search_parser.add_argument("--roles", help="Comma-separated role categories from keywords.py (e.g., software_engineer,data_ml)")
-    search_parser.add_argument("--location", help="Location filter")
-    search_parser.add_argument("--companies", help="Comma-separated companies")
-    search_parser.add_argument("--limit", type=int, default=10, help="Max posts per query")
-    search_parser.add_argument("--min-posts", type=int, default=3, help="Min posts to collect")
-    search_parser.add_argument("--timeout", type=int, default=60, help="Timeout per query")
-    search_parser.add_argument("--hours", type=int, default=24, help="Filter to last N hours")
-    search_parser.add_argument("--session", help="Session file path")
-    search_parser.add_argument("--output", help="Output JSON file")
-    search_parser.add_argument("--headless", action="store_true", help="Run headless")
-    search_parser.add_argument("--list-presets", action="store_true", help="List available presets")
 
-    # Tailor command
-    tailor_parser = subparsers.add_parser("tailor", help="Prepare CV tailoring")
-    tailor_parser.add_argument("--job-text", help="Job posting text")
-    tailor_parser.add_argument("--job-file", help="Job posting file")
-    tailor_parser.add_argument("--cv-file", help="CV LaTeX file")
-    tailor_parser.add_argument("--output", help="Output directory")
-    tailor_parser.add_argument("--save-context", action="store_true", help="Save context JSON")
+def cmd_tailor_replace(args: argparse.Namespace) -> int:
+    assistant = CareerAssistant(memory_path=args.memory_path)
+    cv_path = assistant.resolve_cv_path(args.cv_file)
+    cv_latex = cv_path.read_text(encoding="utf-8")
+    alignment = _read_json(args.alignment)
+    stories = _read_json(args.stories) if args.stories else []
+    options = _read_json(args.options) if args.options else {}
+    prompt = CVTailoringPipeline().build_replace_prompt(
+        cv_latex=cv_latex,
+        alignment=alignment,
+        stories=stories,
+        options=options,
+    )
+    payload = _prompt_payload(
+        stage="replace",
+        prompt=prompt,
+        expected_output=(
+            "One JSON object with summary, alignment_improvement, strategic_recommendations, "
+            "changes, and risks. Each changes entry must preserve exact original_text substrings."
+        ),
+        quality_checks=[
+            "Return valid JSON only.",
+            "Do not leave placeholders such as COMPANY1, [COMPANY], or <ROLE> in any edited_text.",
+            "Do not invent tools, metrics, employers, dates, or scope not supported by the CV or stories.",
+            "Preserve LaTeX wrappers and keep each change scoped to one inventory row.",
+        ],
+        suggested_output="changes.json",
+    )
+    _write_json(payload, args.output)
+    return 0
 
-    # Compile command
+
+def cmd_tailor_cover_letter(args: argparse.Namespace) -> int:
+    assistant = CareerAssistant(memory_path=args.memory_path)
+    cv_path = assistant.resolve_cv_path(args.cv_file)
+    cv_latex = cv_path.read_text(encoding="utf-8")
+    parsed_job = _read_json(args.parsed_job)
+    alignment = _read_json(args.alignment) if args.alignment else {}
+    job_meta = _read_json(args.job_meta) if args.job_meta else {}
+    template = Path(args.template_file).read_text(encoding="utf-8") if args.template_file else ""
+    user_story = args.user_story or assistant.memory.get_value("profile.headline", "")
+    prompt = CVTailoringPipeline().build_cover_letter_prompt(
+        parsed_job=parsed_job,
+        cv_latex=cv_latex,
+        alignment=alignment,
+        job=job_meta,
+        user_story=user_story,
+        template=template,
+    )
+    payload = _prompt_payload(
+        stage="cover-letter",
+        prompt=prompt,
+        expected_output="One JSON object with body_latex and closing only.",
+        quality_checks=[
+            "Return valid JSON only.",
+            "Never leave placeholders such as COMPANY1, [COMPANY], <ROLE>, or copied template tokens.",
+            "Base every claim on the CV and alignment evidence only.",
+            "Keep the tone specific, adaptable, and free of generic filler.",
+        ],
+        suggested_output="cover_letter.json",
+    )
+    _write_json(payload, args.output)
+    return 0
+
+
+def cmd_tailor_apply(args: argparse.Namespace) -> int:
+    assistant = CareerAssistant(memory_path=args.memory_path, output_dir=args.output_dir)
+    try:
+        tailored_path = assistant.apply_tailoring(
+            context_path=args.context,
+            alignment_path=args.alignment,
+            changes_path=args.changes,
+            output_path=args.output,
+        )
+    except Exception as exc:
+        print(f"Apply failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"Saved tailored CV to {tailored_path}")
+    return 0
+
+
+def cmd_compile(args: argparse.Namespace) -> int:
+    assistant = CareerAssistant(memory_path=args.memory_path)
+    try:
+        result = assistant.compile_cv(args.latex_file, args.output)
+    except Exception as exc:
+        print(f"Compile failed: {exc}", file=sys.stderr)
+        return 1
+
+    if result["success"]:
+        print(json.dumps(result, indent=2))
+        return 0
+    print(json.dumps(result, indent=2), file=sys.stderr)
+    return 1
+
+
+def cmd_email(args: argparse.Namespace) -> int:
+    assistant = CareerAssistant(memory_path=args.memory_path)
+    try:
+        email = assistant.generate_email(
+            job_title=args.job,
+            company=args.company,
+            location=args.location or "",
+            recipient_email=args.to or "",
+            recipient_name=args.recipient_name or "",
+            cv_path=args.cv,
+            cover_letter_path=args.cover_letter,
+            output_path=args.output,
+            open_mailto=args.open_mailto,
+        )
+    except Exception as exc:
+        print(f"Email generation failed: {exc}", file=sys.stderr)
+        return 1
+
+    if not args.output:
+        print(
+            json.dumps(
+                {
+                    "subject": email.subject,
+                    "body": email.body,
+                    "to": email.to,
+                    "mailto_url": email.mailto_url,
+                    "attachments": email.attachments,
+                    "warnings": email.warnings,
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+    return 0
+
+
+def cmd_ui(args: argparse.Namespace) -> int:
+    from job_assist_skill.assistant.ui.app import create_app
+
+    feedback_store = FeedbackStore() if args.learn else None
+    app = create_app(
+        output_dir=args.output_dir,
+        cv_latex_template=args.cv_file,
+        feedback_store=feedback_store,
+    )
+    app.run(host="0.0.0.0", port=args.port, debug=not args.production)
+    return 0
+
+
+def cmd_memory_show(args: argparse.Namespace) -> int:
+    assistant = CareerAssistant(memory_path=args.memory_path)
+    print(json.dumps(assistant.memory.to_dict(), indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_memory_set(args: argparse.Namespace) -> int:
+    assistant = CareerAssistant(memory_path=args.memory_path)
+    value: Any = args.value
+    if args.as_json:
+        value = json.loads(args.value)
+    assistant.memory.set_value(args.key, value)
+    print(f"Updated {args.key}")
+    return 0
+
+
+def cmd_memory_update(args: argparse.Namespace) -> int:
+    assistant = CareerAssistant(memory_path=args.memory_path)
+    payload = _read_json(args.file) if args.file else json.loads(args.json)
+    assistant.memory.update(payload)
+    print(f"Updated memory at {assistant.memory.path}")
+    return 0
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    assistant = CareerAssistant(memory_path=args.memory_path, output_dir=args.output_dir)
+    report = assistant.get_setup_report()
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+    return 0
+
+
+async def cmd_batch(args: argparse.Namespace) -> int:
+    assistant = CareerAssistant(memory_path=args.memory_path, output_dir=args.output_dir)
+    roles = []
+    locations = _csv_to_list(args.locations or args.location)
+
+    if args.preset:
+        if args.preset not in kw.QUICK_SEARCHES:
+            print(f"Unknown preset: {args.preset}", file=sys.stderr)
+            return 1
+        preset = kw.QUICK_SEARCHES[args.preset]
+        roles.extend(preset.get("roles", []))
+        if not locations:
+            locations = preset.get("locations", [])
+
+    if args.query:
+        roles.append(args.query)
+    roles.extend(_csv_to_list(args.roles))
+
+    results = await assistant.search(
+        roles=roles,
+        locations=locations,
+        companies=_csv_to_list(args.companies),
+        stream=args.stream,
+        limit=args.limit,
+        min_posts=args.min_posts,
+        timeout=args.timeout,
+        max_hours_age=args.hours,
+        session_path=args.session,
+        headless=args.headless,
+        expand_job_details=not args.no_job_details,
+        email_only_posts=args.email_only_posts,
+    )
+
+    summary = []
+    for candidate in results[: args.max_candidates]:
+        if not candidate.text.strip():
+            continue
+        tailoring = assistant.prepare_tailoring(
+            job_text=candidate.text,
+            cv_path=args.cv_file,
+            output_dir=args.output_dir,
+        )
+        email_path = Path(args.output_dir) / f"email_{tailoring.context.tailoring_session_id}.json"
+        assistant.generate_email(
+            job_title=candidate.title or "Target Role",
+            company=candidate.company or "",
+            location=candidate.location or "",
+            recipient_email=(candidate.contact_emails[0] if candidate.contact_emails else ""),
+            output_path=str(email_path),
+        )
+        summary.append(
+            {
+                "candidate": candidate.to_dict(),
+                "tailoring_context": tailoring.context_path,
+                "cv_source": tailoring.latex_path,
+                "email_draft": str(email_path),
+                "recommended_commands": [
+                    f"python main.py tailor alignment --parsed-job <parsed_job.json> --cv-file {tailoring.latex_path}",
+                    f"python main.py tailor replace --alignment <alignment.json> --cv-file {tailoring.latex_path}",
+                    f"python main.py tailor cover-letter --parsed-job <parsed_job.json> --cv-file {tailoring.latex_path} --alignment <alignment.json>",
+                    f"python main.py tailor apply --context {tailoring.context_path} --alignment <alignment.json> --changes <changes.json>",
+                ],
+            }
+        )
+
+    _write_json(summary, args.output)
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Agent-controlled job search skill",
+        epilog="Example: python main.py search \"operations manager\" --stream both --location \"Riyadh\"",
+    )
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument("--memory", dest="memory_path", help="Path to memory JSON")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    search = subparsers.add_parser(
+        "search",
+        help="Run LinkedIn search using jobs, posts, or both",
+        epilog="Example: python main.py search \"operations manager\" --stream both --output output/search.json",
+    )
+    search.add_argument("query", nargs="?", help="Freeform search query, e.g. 'financial analyst'")
+    search.add_argument("--roles", help="Comma-separated role names or keyword categories")
+    search.add_argument("--preset", help="Preset from keywords.py")
+    search.add_argument("--location", help="Comma-separated locations")
+    search.add_argument("--locations", help="Comma-separated locations")
+    search.add_argument("--companies", help="Comma-separated companies")
+    search.add_argument("--stream", choices=["jobs", "posts", "both"], default="both")
+    search.add_argument("--limit", type=int, default=10)
+    search.add_argument("--min-posts", type=int, default=3)
+    search.add_argument("--timeout", type=int, default=60)
+    search.add_argument("--hours", type=int, default=24)
+    search.add_argument("--session", help="Path to LinkedIn session JSON")
+    search.add_argument("--memory-path", "--memory", dest="memory_path", help="Path to memory JSON")
+    search.add_argument("--output-dir", default="output", help="Directory for generated artifacts")
+    search.add_argument("--output", help="Optional JSON output path")
+    search.add_argument("--headless", action="store_true", help="Run browser headless")
+    search.add_argument("--no-job-details", action="store_true", help="Do not open each job result page")
+    search.add_argument("--email-only-posts", action="store_true", help="For the posts stream, keep only posts that expose a contact email")
+    search.add_argument("--list-presets", action="store_true", help="List available presets")
+
+    login = subparsers.add_parser("login", help="Open browser for manual LinkedIn login")
+    login.add_argument("--session", help="Where to save the LinkedIn session JSON")
+    login.add_argument("--auto", action="store_true", help="Use LinkedIn credentials from .env/environment")
+    login.add_argument("--force", action="store_true", help="Ignore any saved session and perform a fresh login")
+    login.add_argument("--timeout", type=int, default=300, help="Manual login timeout in seconds")
+    login.add_argument("--memory-path", "--memory", dest="memory_path", help="Path to memory JSON")
+
+    tailor = subparsers.add_parser(
+        "tailor",
+        help="Build or apply staged tailoring prompts",
+        epilog="Example: python main.py tailor prepare --job-file job.txt --cv-file cv_template.tex --output-dir output",
+    )
+    tailor_subparsers = tailor.add_subparsers(dest="tailor_command", required=True)
+
+    tailor_prepare = tailor_subparsers.add_parser("prepare", help="Save initial tailoring bundle")
+    tailor_prepare.add_argument("--job-text", help="Raw job posting text")
+    tailor_prepare.add_argument("--job-file", help="Path to job posting text file")
+    tailor_prepare.add_argument("--cv-file", help="Path to CV LaTeX")
+    tailor_prepare.add_argument("--memory-path", "--memory", dest="memory_path", help="Path to memory JSON")
+    tailor_prepare.add_argument("--output-dir", default="output")
+    tailor_prepare.add_argument("--context-out", help="Optional alternate context output path")
+
+    tailor_alignment = tailor_subparsers.add_parser("alignment", help="Build alignment prompt payload")
+    tailor_alignment.add_argument("--parsed-job", required=True, help="PARSE_JOB JSON file")
+    tailor_alignment.add_argument("--cv-file", help="Path to CV LaTeX")
+    tailor_alignment.add_argument("--memory-path", "--memory", dest="memory_path", help="Path to memory JSON")
+    tailor_alignment.add_argument("--output", help="Output JSON file for the prompt payload")
+
+    tailor_replace = tailor_subparsers.add_parser("replace", help="Build rewrite prompt payload")
+    tailor_replace.add_argument("--alignment", required=True, help="Alignment JSON file")
+    tailor_replace.add_argument("--cv-file", help="Path to CV LaTeX")
+    tailor_replace.add_argument("--stories", help="Optional JSON file of grounded stories")
+    tailor_replace.add_argument("--options", help="Optional JSON file of rewrite options")
+    tailor_replace.add_argument("--memory-path", "--memory", dest="memory_path", help="Path to memory JSON")
+    tailor_replace.add_argument("--output", help="Output JSON file for the prompt payload")
+
+    tailor_cover = tailor_subparsers.add_parser("cover-letter", help="Build cover letter prompt payload")
+    tailor_cover.add_argument("--parsed-job", required=True, help="PARSE_JOB JSON file")
+    tailor_cover.add_argument("--cv-file", help="Path to CV LaTeX")
+    tailor_cover.add_argument("--alignment", help="Optional alignment JSON file")
+    tailor_cover.add_argument("--job-meta", help="Optional job metadata JSON file")
+    tailor_cover.add_argument("--template-file", help="Optional LaTeX cover letter template")
+    tailor_cover.add_argument("--user-story", help="Optional user-provided story/objective")
+    tailor_cover.add_argument("--memory-path", "--memory", dest="memory_path", help="Path to memory JSON")
+    tailor_cover.add_argument("--output", help="Output JSON file for the prompt payload")
+
+    tailor_apply = tailor_subparsers.add_parser("apply", help="Apply agent-authored rewrite JSON")
+    tailor_apply.add_argument("--context", required=True, help="Prepared tailoring context JSON")
+    tailor_apply.add_argument("--alignment", required=True, help="Alignment JSON from the agent")
+    tailor_apply.add_argument("--changes", required=True, help="Rewrite JSON from the agent")
+    tailor_apply.add_argument("--output", help="Optional tailored LaTeX output path")
+    tailor_apply.add_argument("--memory-path", "--memory", dest="memory_path", help="Path to memory JSON")
+    tailor_apply.add_argument("--output-dir", default="output")
+
     compile_parser = subparsers.add_parser("compile", help="Compile LaTeX to PDF")
-    compile_parser.add_argument("--latex-file", help="LaTeX file")
+    compile_parser.add_argument("--latex-file", required=True)
     compile_parser.add_argument("--output", help="Output PDF path")
+    compile_parser.add_argument("--memory-path", "--memory", dest="memory_path", help="Path to memory JSON")
 
-    # Email command
-    email_parser = subparsers.add_parser("email", help="Generate application email")
-    email_parser.add_argument("--job", help="Job title")
-    email_parser.add_argument("--company", help="Company name")
-    email_parser.add_argument("--location", help="Location")
-    email_parser.add_argument("--to", help="Recipient email")
-    email_parser.add_argument("--cv", help="CV PDF path")
-    email_parser.add_argument("--output", help="Output JSON file")
+    email = subparsers.add_parser("email", help="Generate a local email draft JSON")
+    email.add_argument("--job", required=True, help="Job title")
+    email.add_argument("--company", required=True, help="Company name")
+    email.add_argument("--location", help="Job location")
+    email.add_argument("--to", help="Recipient email")
+    email.add_argument("--recipient-name", help="Recipient display name")
+    email.add_argument("--cv", help="Attached CV path")
+    email.add_argument("--cover-letter", help="Attached cover letter path")
+    email.add_argument("--output", help="Optional output JSON path")
+    email.add_argument("--open-mailto", action="store_true", help="Open the default mail client using a mailto: URL after building the draft")
+    email.add_argument("--memory-path", "--memory", dest="memory_path", help="Path to memory JSON")
 
-    # UI command
-    ui_parser = subparsers.add_parser("ui", help="Start web UI")
-    ui_parser.add_argument("--port", type=int, default=5050, help="UI port")
-    ui_parser.add_argument("--output", help="Output directory")
-    ui_parser.add_argument("--no-learn", dest="learn", action="store_false", help="Disable learning")
-    ui_parser.add_argument("--production", action="store_true", help="Production mode")
+    doctor = subparsers.add_parser("doctor", help="Show missing blocking inputs and setup readiness for the agent")
+    doctor.add_argument("--memory-path", "--memory", dest="memory_path", help="Path to memory JSON")
+    doctor.add_argument("--output-dir", default="output", help="Directory for generated artifacts")
 
-    # Login command
-    login_parser = subparsers.add_parser("login", help="Login to LinkedIn")
-    login_parser.add_argument("--session", help="Session output path")
+    ui = subparsers.add_parser("ui", help="Launch the local review UI")
+    ui.add_argument("--port", type=int, default=5050)
+    ui.add_argument("--output-dir", default="output")
+    ui.add_argument("--cv-file", help="Path to CV LaTeX template")
+    ui.add_argument("--production", action="store_true")
+    ui.add_argument("--no-learn", dest="learn", action="store_false")
 
-    # Demo command
-    demo_parser = subparsers.add_parser("demo", help="Run full demo")
-    demo_parser.add_argument("--session", help="Session file path")
-    demo_parser.add_argument("--headless", action="store_true", help="Run headless")
+    memory = subparsers.add_parser("memory", help="Inspect or update user preference memory")
+    memory.add_argument("--memory-path", "--memory", dest="memory_path", help="Path to memory JSON")
+    memory_subparsers = memory.add_subparsers(dest="memory_command", required=True)
 
-    args = parser.parse_args()
+    memory_show = memory_subparsers.add_parser("show", help="Show current memory")
+    memory_show.add_argument("--memory-path", "--memory", dest="memory_path", help="Path to memory JSON")
 
-    if args.debug:
-        import logging
+    memory_set = memory_subparsers.add_parser("set", help="Set a nested memory value")
+    memory_set.add_argument("key", help="Dotted key, e.g. profile.name")
+    memory_set.add_argument("value", help="Value to store")
+    memory_set.add_argument("--as-json", action="store_true", help="Parse the value as JSON")
+    memory_set.add_argument("--memory-path", "--memory", dest="memory_path", help="Path to memory JSON")
+
+    memory_update = memory_subparsers.add_parser("update", help="Deep-merge a JSON payload into memory")
+    memory_update.add_argument("--file", help="JSON file to merge")
+    memory_update.add_argument("--json", help="Inline JSON to merge")
+    memory_update.add_argument("--memory-path", "--memory", dest="memory_path", help="Path to memory JSON")
+
+    batch = subparsers.add_parser(
+        "batch",
+        help="Search and prepare prompt bundles for multiple results",
+        epilog="Example: python main.py batch \"operations manager\" --stream both --max-candidates 5",
+    )
+    batch.add_argument("query", nargs="?", help="Freeform search query")
+    batch.add_argument("--roles", help="Comma-separated role names or keyword categories")
+    batch.add_argument("--preset", help="Preset from keywords.py")
+    batch.add_argument("--location", help="Comma-separated locations")
+    batch.add_argument("--locations", help="Comma-separated locations")
+    batch.add_argument("--companies", help="Comma-separated companies")
+    batch.add_argument("--stream", choices=["jobs", "posts", "both"], default="both")
+    batch.add_argument("--limit", type=int, default=10)
+    batch.add_argument("--min-posts", type=int, default=3)
+    batch.add_argument("--timeout", type=int, default=60)
+    batch.add_argument("--hours", type=int, default=24)
+    batch.add_argument("--max-candidates", type=int, default=5)
+    batch.add_argument("--session", help="Path to LinkedIn session JSON")
+    batch.add_argument("--memory-path", "--memory", dest="memory_path", help="Path to memory JSON")
+    batch.add_argument("--output-dir", default="output")
+    batch.add_argument("--output", default="output/batch_summary.json")
+    batch.add_argument("--headless", action="store_true")
+    batch.add_argument("--no-job-details", action="store_true")
+    batch.add_argument("--email-only-posts", action="store_true", help="For the posts stream, keep only posts that expose a contact email")
+    batch.add_argument("--cv-file", help="Path to CV LaTeX")
+
+    return parser
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if getattr(args, "debug", False):
         logging.basicConfig(level=logging.DEBUG)
 
     if args.command == "search":
         return asyncio.run(cmd_search(args))
-    elif args.command == "tailor":
-        return cmd_tailor(args)
-    elif args.command == "compile":
-        return cmd_compile(args)
-    elif args.command == "email":
-        return cmd_email(args)
-    elif args.command == "ui":
-        cmd_ui(args)
-    elif args.command == "login":
+    if args.command == "login":
         return asyncio.run(cmd_login(args))
-    elif args.command == "demo":
-        return asyncio.run(cmd_demo(args))
-    else:
-        parser.print_help()
-        return 0
+    if args.command == "compile":
+        return cmd_compile(args)
+    if args.command == "email":
+        return cmd_email(args)
+    if args.command == "doctor":
+        return cmd_doctor(args)
+    if args.command == "ui":
+        return cmd_ui(args)
+    if args.command == "batch":
+        return asyncio.run(cmd_batch(args))
+    if args.command == "memory":
+        if args.memory_command == "show":
+            return cmd_memory_show(args)
+        if args.memory_command == "set":
+            return cmd_memory_set(args)
+        if args.memory_command == "update":
+            if not args.file and not args.json:
+                print("Provide --file or --json", file=sys.stderr)
+                return 1
+            return cmd_memory_update(args)
+    if args.command == "tailor":
+        if args.tailor_command == "prepare":
+            return cmd_tailor_prepare(args)
+        if args.tailor_command == "alignment":
+            return cmd_tailor_alignment(args)
+        if args.tailor_command == "replace":
+            return cmd_tailor_replace(args)
+        if args.tailor_command == "cover-letter":
+            return cmd_tailor_cover_letter(args)
+        if args.tailor_command == "apply":
+            return cmd_tailor_apply(args)
+
+    parser.print_help()
+    return 1
 
 
 if __name__ == "__main__":
-    exit(main())
+    raise SystemExit(main())

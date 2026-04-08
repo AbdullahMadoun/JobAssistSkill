@@ -1,19 +1,17 @@
-"""
-Career Assistant Web UI.
+"""Minimal review UI for local, agent-prepared candidate data."""
 
-Flask web application for reviewing and approving job candidates,
-viewing tailored CVs, and sending application emails.
-"""
+from __future__ import annotations
 
-import os
+import json
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
-from datetime import datetime
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file
-import logging
+from flask import Flask, jsonify, render_template, request, send_file
 
-logger = logging.getLogger(__name__)
+from ..email.mailto_client import MailtoClient
+from ..pipeline.email_generator import EmailGenerator
+from ..pipeline.tailoring import CVTailoringPipeline
 
 
 def create_app(
@@ -21,99 +19,57 @@ def create_app(
     feedback_store=None,
     output_dir: str = "./output",
     cv_latex_template: Optional[str] = None,
-    llm_provider: str = "openai",
-    model: str = "gpt-4o",
 ) -> Flask:
-    """
-    Create Flask application for career assistant UI.
-
-    Args:
-        candidates_store: In-memory candidates store
-        feedback_store: FeedbackStore instance
-        output_dir: Directory for compiled CVs and outputs
-        cv_latex_template: Path to user's LaTeX CV template
-        llm_provider: LLM provider (openai, anthropic)
-        model: Model name to use
-
-    Returns:
-        Flask app instance
-    """
+    """Create a lightweight local review application."""
     app = Flask(__name__, template_folder="templates")
-    app.config['OUTPUT_DIR'] = output_dir
-
-    if candidates_store is None:
-        candidates_store = {}
-
-    app.candidates_store = candidates_store
+    app.candidates_store = candidates_store or {}
     app.feedback_store = feedback_store
-    app.llm_provider = llm_provider
-    app.model = model
-
-    if cv_latex_template and os.path.exists(cv_latex_template):
-        app.cv_latex_template = Path(cv_latex_template).read_text(encoding='utf-8')
-    else:
-        app.cv_latex_template = None
-
-    os.makedirs(output_dir, exist_ok=True)
+    app.output_dir = Path(output_dir)
+    app.output_dir.mkdir(parents=True, exist_ok=True)
+    app.cv_latex_template = (
+        Path(cv_latex_template).read_text(encoding="utf-8")
+        if cv_latex_template and Path(cv_latex_template).exists()
+        else None
+    )
 
     @app.route("/")
     def dashboard():
-        """Main dashboard with pending candidates."""
-        candidates = _get_pending_candidates(app.candidates_store)
-        stats = _get_stats(app.candidates_store, app.feedback_store)
-
         return render_template(
             "dashboard.html",
-            candidates=candidates,
-            stats=stats,
+            candidates=_by_status(app.candidates_store, "pending"),
+            stats=_stats(app.candidates_store, app.feedback_store),
             now=datetime.now(),
         )
 
     @app.route("/candidate/<candidate_id>")
     def candidate_detail(candidate_id: str):
-        """Candidate detail view."""
         candidate = app.candidates_store.get(candidate_id)
         if not candidate:
             return "Candidate not found", 404
+        job_context = app.feedback_store.get_job_context(candidate_id) if app.feedback_store else None
+        return render_template("candidate_detail.html", candidate=candidate, job_context=job_context)
 
-        job_context = None
-        if app.feedback_store:
-            job_context = app.feedback_store.get_job_context(candidate_id)
+    @app.route("/approved")
+    def approved():
+        return render_template("approved.html", candidates=_by_status(app.candidates_store, "approved"))
 
-        return render_template(
-            "candidate_detail.html",
-            candidate=candidate,
-            job_context=job_context,
-        )
-
-    @app.route("/api/candidates", methods=["GET"])
-    def api_list_candidates():
-        """API: List all candidates."""
+    @app.route("/api/candidates")
+    def api_candidates():
         status = request.args.get("status", "all")
-
-        if status == "all":
-            candidates = list(app.candidates_store.values())
-        else:
-            candidates = [
-                c for c in app.candidates_store.values()
-                if c.get("status") == status
-            ]
-
-        return jsonify({
-            "candidates": [_serialize_candidate(c) for c in candidates],
-            "total": len(candidates),
-        })
+        candidates = (
+            list(app.candidates_store.values())
+            if status == "all"
+            else _by_status(app.candidates_store, status)
+        )
+        return jsonify({"candidates": [_serialize(c) for c in candidates], "total": len(candidates)})
 
     @app.route("/api/candidate/<candidate_id>/approve", methods=["POST"])
-    def api_approve_candidate(candidate_id: str):
-        """API: Approve a candidate."""
+    def approve(candidate_id: str):
         candidate = app.candidates_store.get(candidate_id)
         if not candidate:
             return jsonify({"error": "Candidate not found"}), 404
-
         candidate["status"] = "approved"
         candidate["approved_at"] = datetime.now().isoformat()
-
         if app.feedback_store:
             app.feedback_store.record_feedback(
                 candidate_id=candidate_id,
@@ -121,19 +77,15 @@ def create_app(
                 job_keywords=[candidate.get("title", "")],
                 company_name=candidate.get("company", ""),
             )
-
         return jsonify({"success": True, "status": "approved"})
 
     @app.route("/api/candidate/<candidate_id>/reject", methods=["POST"])
-    def api_reject_candidate(candidate_id: str):
-        """API: Reject a candidate."""
+    def reject(candidate_id: str):
         candidate = app.candidates_store.get(candidate_id)
         if not candidate:
             return jsonify({"error": "Candidate not found"}), 404
-
         candidate["status"] = "rejected"
         candidate["rejected_at"] = datetime.now().isoformat()
-
         if app.feedback_store:
             app.feedback_store.record_feedback(
                 candidate_id=candidate_id,
@@ -141,182 +93,95 @@ def create_app(
                 job_keywords=[candidate.get("title", "")],
                 company_name=candidate.get("company", ""),
             )
-
         return jsonify({"success": True, "status": "rejected"})
 
     @app.route("/api/candidate/<candidate_id>/tailor", methods=["POST"])
-    def api_tailor_cv(candidate_id: str):
-        """API: Trigger CV tailoring for a candidate."""
+    def tailor(candidate_id: str):
         candidate = app.candidates_store.get(candidate_id)
         if not candidate:
             return jsonify({"error": "Candidate not found"}), 404
+        if not app.cv_latex_template:
+            return jsonify({"error": "CV template not configured"}), 400
+        job_text = candidate.get("snippet") or candidate.get("raw_data", {}).get("post_text") or ""
+        if not job_text:
+            return jsonify({"error": "No job text available"}), 400
 
-        candidate["tailoring_status"] = "in_progress"
+        pipeline = CVTailoringPipeline()
+        result = pipeline.prepare(
+            job_text=job_text,
+            cv_latex=app.cv_latex_template,
+            output_dir=str(app.output_dir),
+        )
+        if not result.success:
+            return jsonify({"error": result.error}), 500
 
-        try:
-            from ..pipeline.tailoring import CVTailoringPipeline
-
-            job_text = candidate.get("snippet") or candidate.get("raw_data", {}).get("post_text", "")
-            if not job_text:
-                return jsonify({"error": "No job text available"}), 400
-
-            pipeline = CVTailoringPipeline(
-                llm_provider=app.llm_provider,
-                model=app.model,
-            )
-
-            cv_latex = app.cv_latex_template
-            if not cv_latex:
-                cv_template_path = Path(output_dir).parent / "cv.tex"
-                if cv_template_path.exists():
-                    cv_latex = cv_template_path.read_text(encoding='utf-8')
-
-            if not cv_latex:
-                return jsonify({"error": "CV template not found"}), 400
-
-            result = pipeline.tailor(
-                job_text=job_text,
-                cv_latex=cv_latex,
-                output_dir=output_dir,
-            )
-
-            if result.success:
-                candidate["tailoring_status"] = "completed"
-                candidate["tailored_cv_path"] = result.pdf_path
-                candidate["alignment_score_before"] = result.alignment_score_before
-                candidate["alignment_score_after"] = result.alignment_score_after
-                return jsonify({
-                    "success": True,
-                    "cv_path": result.pdf_path,
-                    "alignment_before": result.alignment_score_before,
-                    "alignment_after": result.alignment_score_after,
-                })
-            else:
-                candidate["tailoring_status"] = "failed"
-                candidate["tailoring_error"] = result.error
-                return jsonify({"error": result.error}), 500
-
-        except Exception as e:
-            logger.exception(f"CV tailoring failed for {candidate_id}")
-            candidate["tailoring_status"] = "failed"
-            candidate["tailoring_error"] = str(e)
-            return jsonify({"error": str(e)}), 500
+        candidate["tailoring_context_path"] = result.context_path
+        candidate["tailoring_status"] = "prepared"
+        return jsonify(
+            {
+                "success": True,
+                "context_path": result.context_path,
+                "latex_path": result.latex_path,
+            }
+        )
 
     @app.route("/api/candidate/<candidate_id>/email", methods=["POST"])
-    def api_generate_email(candidate_id: str):
-        """API: Generate application email for a candidate."""
+    def email(candidate_id: str):
         candidate = app.candidates_store.get(candidate_id)
         if not candidate:
             return jsonify({"error": "Candidate not found"}), 404
-
-        email_data = request.get_json() or {}
-
-        try:
-            from ..pipeline.email_generator import EmailGenerator
-
-            generator = EmailGenerator()
-
-            cv_path = candidate.get("tailored_cv_path")
-            cover_letter_path = email_data.get("cover_letter_path")
-
-            email = generator.generate_application_email(
-                job={
-                    "title": candidate.get("title", ""),
-                    "company": candidate.get("company", ""),
-                    "location": candidate.get("location", ""),
-                },
-                recipient_email=email_data.get("to", ""),
-                cv_path=cv_path,
-                cover_letter_path=cover_letter_path,
-            )
-
-            candidate["email"] = {
-                "subject": email.subject,
-                "body": email.body,
-                "to": email.to,
-                "cc": email.cc,
-                "status": "draft",
-            }
-
-            return jsonify({
-                "success": True,
-                "email": {
-                    "subject": email.subject,
-                    "body": email.body,
-                    "to": email.to,
-                    "cc": email.cc,
-                }
-            })
-
-        except Exception as e:
-            logger.exception(f"Email generation failed for {candidate_id}")
-            return jsonify({"error": str(e)}), 500
-
-    @app.route("/approved")
-    def approved_list():
-        """List of approved candidates ready to apply."""
-        candidates = _get_approved_candidates(app.candidates_store)
-        return render_template("approved.html", candidates=candidates)
+        body = request.get_json(silent=True) or {}
+        generator = EmailGenerator()
+        email_draft = generator.generate_application_email(
+            job={
+                "title": candidate.get("title", ""),
+                "company": candidate.get("company", ""),
+                "location": candidate.get("location", ""),
+            },
+            recipient_email=body.get("to", ""),
+            recipient_name=body.get("recipient_name", ""),
+            cv_path=body.get("cv_path", ""),
+            cover_letter_path=body.get("cover_letter_path", ""),
+            sender_name=body.get("sender_name", "Candidate"),
+            sender_email=body.get("sender_email", ""),
+            user_summary=body.get("user_summary", ""),
+        )
+        mailto_url = MailtoClient(
+            user_name=body.get("sender_name", "Candidate"),
+            user_email=body.get("sender_email", ""),
+        ).create_mailto_url(
+            to=body.get("to", ""),
+            subject=email_draft.subject,
+            body=email_draft.body,
+            cc=email_draft.cc or "",
+            bcc=email_draft.bcc or "",
+        )
+        candidate["email"] = {
+            "subject": email_draft.subject,
+            "body": email_draft.body,
+            "to": email_draft.to,
+            "attachments": email_draft.attachments,
+            "mailto_url": mailto_url,
+            "warnings": email_draft.warnings,
+            "status": "draft",
+        }
+        return jsonify({"success": True, "email": candidate["email"]})
 
     @app.route("/statistics")
     def statistics():
-        """Feedback and learning statistics."""
-        stats = {}
-        if app.feedback_store:
-            stats = app.feedback_store.get_statistics()
-
-        return jsonify(stats)
+        return jsonify(app.feedback_store.get_statistics() if app.feedback_store else {})
 
     @app.route("/output/<path:filename>")
-    def serve_output(filename: str):
-        """Serve output files (CVs, PDFs)."""
-        return send_file(os.path.join(output_dir, filename))
-
-    @app.route("/refresh", methods=["POST"])
-    def refresh_candidates():
-        """Refresh candidates from LinkedIn."""
-        pass
+    def output_file(filename: str):
+        file_path = app.output_dir / filename
+        if not file_path.exists():
+            return "Not found", 404
+        return send_file(file_path)
 
     return app
 
 
-def _get_pending_candidates(store: Dict) -> List[Dict]:
-    """Get all pending candidates."""
-    return [
-        _serialize_candidate(c)
-        for c in store.values()
-        if c.get("status") == "pending"
-    ]
-
-
-def _get_approved_candidates(store: Dict) -> List[Dict]:
-    """Get all approved candidates."""
-    return [
-        _serialize_candidate(c)
-        for c in store.values()
-        if c.get("status") == "approved"
-    ]
-
-
-def _get_stats(store: Dict, feedback_store) -> Dict:
-    """Get dashboard statistics."""
-    stats = {
-        "total": len(store),
-        "pending": sum(1 for c in store.values() if c.get("status") == "pending"),
-        "approved": sum(1 for c in store.values() if c.get("status") == "approved"),
-        "rejected": sum(1 for c in store.values() if c.get("status") == "rejected"),
-        "applied": sum(1 for c in store.values() if c.get("status") == "applied"),
-    }
-
-    if feedback_store:
-        fb_stats = feedback_store.get_statistics()
-        stats.update(fb_stats)
-
-    return stats
-
-
-def _serialize_candidate(candidate: Dict) -> Dict:
-    """Serialize candidate for JSON/display."""
+def _serialize(candidate: Dict) -> Dict:
     return {
         "id": candidate.get("candidate_id", ""),
         "title": candidate.get("title", ""),
@@ -326,6 +191,24 @@ def _serialize_candidate(candidate: Dict) -> Dict:
         "status": candidate.get("status", "pending"),
         "url": candidate.get("url", ""),
         "snippet": candidate.get("snippet", "")[:150] + "..." if candidate.get("snippet") else "",
-        "llm_score": candidate.get("llm_score", 0),
         "collected_at": candidate.get("collected_at", ""),
+        "approved_at": candidate.get("approved_at", ""),
+        "email": candidate.get("email"),
     }
+
+
+def _by_status(store: Dict, status: str) -> List[Dict]:
+    return [_serialize(candidate) for candidate in store.values() if candidate.get("status") == status]
+
+
+def _stats(store: Dict, feedback_store) -> Dict:
+    stats = {
+        "total": len(store),
+        "pending": sum(1 for value in store.values() if value.get("status") == "pending"),
+        "approved": sum(1 for value in store.values() if value.get("status") == "approved"),
+        "rejected": sum(1 for value in store.values() if value.get("status") == "rejected"),
+        "applied": sum(1 for value in store.values() if value.get("status") == "applied"),
+    }
+    if feedback_store:
+        stats.update(feedback_store.get_statistics())
+    return stats

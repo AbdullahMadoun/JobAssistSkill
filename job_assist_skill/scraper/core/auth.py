@@ -13,6 +13,31 @@ from .utils import detect_rate_limit
 
 logger = logging.getLogger(__name__)
 
+USERNAME_SELECTORS = [
+    "#username",
+    "input[name='session_key']",
+    "input[autocomplete='username']",
+    "input[type='email']",
+]
+
+PASSWORD_SELECTORS = [
+    "#password",
+    "input[name='session_password']",
+    "input[autocomplete='current-password']",
+    "input[type='password']",
+]
+
+
+async def _first_visible_selector(page: Page, selectors: list[str], timeout: int) -> Optional[str]:
+    """Return the first visible selector from a list of candidates."""
+    for selector in selectors:
+        try:
+            await page.wait_for_selector(selector, timeout=timeout, state='visible')
+            return selector
+        except PlaywrightTimeoutError:
+            continue
+    return None
+
 
 async def warm_up_browser(page: Page) -> None:
     """
@@ -55,9 +80,17 @@ def load_credentials_from_env() -> Tuple[Optional[str], Optional[str]]:
     """
     load_dotenv()
     
-    # Support both LINKEDIN_EMAIL and LINKEDIN_USERNAME
-    email = os.getenv('LINKEDIN_EMAIL') or os.getenv('LINKEDIN_USERNAME')
-    password = os.getenv('LINKEDIN_PASSWORD')
+    # Support the legacy aliases found in older repo snapshots as well.
+    email = (
+        os.getenv('LINKEDIN_EMAIL')
+        or os.getenv('LINKEDIN_USERNAME')
+        or os.getenv('LinkedinUser')
+        or os.getenv('LINKEDIN_USER')
+    )
+    password = (
+        os.getenv('LINKEDIN_PASSWORD')
+        or os.getenv('LinkedinPassword')
+    )
     
     return email, password
 
@@ -108,18 +141,17 @@ async def login_with_credentials(
         # Check for rate limiting
         await detect_rate_limit(page)
         
-        # Wait for login form
-        try:
-            await page.wait_for_selector('#username', timeout=timeout, state='visible')
-        except PlaywrightTimeoutError:
+        username_selector = await _first_visible_selector(page, USERNAME_SELECTORS, timeout)
+        password_selector = await _first_visible_selector(page, PASSWORD_SELECTORS, timeout)
+        if not username_selector or not password_selector:
             raise AuthenticationError(
                 "Login form not found. LinkedIn may have changed their page structure "
                 "or the site is experiencing issues."
             )
-        
+
         # Fill in credentials
-        await page.fill('#username', email)
-        await page.fill('#password', password)
+        await page.fill(username_selector, email)
+        await page.fill(password_selector, password)
         
         logger.debug("Credentials entered")
         

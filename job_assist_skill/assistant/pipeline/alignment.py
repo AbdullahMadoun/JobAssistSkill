@@ -1,148 +1,80 @@
-"""
-CV Alignment Analyzer - Analyzes CV against job requirements.
+"""Prompt preparation and response parsing for CV alignment analysis."""
 
-Uses the ANALYZE_ALIGNMENT prompt to compare a CV against parsed
-job requirements and identify gaps, strengths, and improvement areas.
-"""
+from __future__ import annotations
 
 import json
-import logging
 from typing import Any, Dict, List, Optional
 
 from ..prompts.loader import PromptLoader, get_prompt_loader
-from .llm_client import LLMClient, get_llm_client
-
-logger = logging.getLogger(__name__)
 
 
 class CVAlignment:
-    """
-    Analyzes CV alignment with job requirements.
-    
-    Compares a candidate's CV LaTeX against parsed job requirements
-    to identify:
-    - Overall alignment score
-    - Missing skills/keywords
-    - Existing strengths
-    - Suggestions for improvement
-    
-    Usage:
-        analyzer = CVAlignment()
-        result = analyzer.analyze(parsed_job, cv_latex)
-        
-        print(result["overall_score"])
-        print(result["missing_keywords"])
-    """
-    
-    def __init__(
-        self,
-        prompt_loader: Optional[PromptLoader] = None,
-        llm_client: Optional[LLMClient] = None,
-    ):
-        """
-        Initialize CVAlignment analyzer.
-        
-        Args:
-            prompt_loader: PromptLoader instance (uses default if None)
-            llm_client: LLMClient instance (uses default if None)
-        """
+    """Prepare ANALYZE_ALIGNMENT prompts for the agent and parse the reply."""
+
+    def __init__(self, prompt_loader: Optional[PromptLoader] = None):
         self.prompt_loader = prompt_loader or get_prompt_loader()
-        self.llm_client = llm_client or get_llm_client()
-    
-    def analyze(
-        self,
-        parsed_job: Dict[str, Any],
-        cv_latex: str,
-    ) -> Dict[str, Any]:
-        """
-        Analyze CV alignment with job requirements.
-        
-        Args:
-            parsed_job: Parsed job requirements from JobParser
-            cv_latex: The candidate's CV in LaTeX format
-            
-        Returns:
-            Dict containing alignment analysis with keys:
-                - overall_score: Float score (0.0 to 1.0)
-                - section_scores: Dict of section-to-score mappings
-                - matched_keywords: List of keywords found in both
-                - missing_keywords: List of required keywords missing from CV
-                - strength_bullets: List of CV bullets that strongly match
-                - weakness_bullets: List of CV bullets that need improvement
-                - suggestions: List of improvement suggestions
-        """
+
+    def prepare_prompt(self, parsed_job: Dict[str, Any], cv_latex: str) -> Dict[str, str]:
+        """Build the prompt package for CV alignment analysis."""
         if not parsed_job:
-            return self._empty_result("Parsed job requirements are empty")
-        
+            raise ValueError("parsed_job is required")
         if not cv_latex or not cv_latex.strip():
-            return self._empty_result("CV LaTeX is empty")
-        
-        try:
-            system_prompt = self.prompt_loader.ANALYZE_ALIGNMENT_SYSTEM
-            user_prompt = self.prompt_loader.ANALYZE_ALIGNMENT_USER(parsed_job, cv_latex)
-            
-            response = self.llm_client.complete_with_json(
-                messages=[{"role": "user", "content": user_prompt}],
-                system=system_prompt,
-            )
-            
-            if not response.success:
-                logger.error(f"Alignment analysis failed: {response.error}")
-                return self._empty_result(f"LLM error: {response.error}")
-            
-            try:
-                analysis = json.loads(response.content)
-                # Ensure required keys exist
-                analysis.setdefault("overall_score", 0.0)
-                analysis.setdefault("section_scores", {})
-                analysis.setdefault("matched_keywords", [])
-                analysis.setdefault("missing_keywords", [])
-                analysis.setdefault("strength_bullets", [])
-                analysis.setdefault("weakness_bullets", [])
-                analysis.setdefault("suggestions", [])
-                return analysis
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse JSON from LLM response: {e}")
-                return self._empty_result(f"JSON parse error: {e}")
-                
-        except Exception as e:
-            logger.exception("Alignment analysis failed unexpectedly")
-            return self._empty_result(str(e))
-    
-    def _empty_result(self, error: str) -> Dict[str, Any]:
-        """Return an empty/error result structure."""
+            raise ValueError("cv_latex is required")
         return {
-            "overall_score": 0.0,
-            "section_scores": {},
-            "matched_keywords": [],
-            "missing_keywords": [],
-            "strength_bullets": [],
-            "weakness_bullets": [],
-            "suggestions": [],
+            "system": self.prompt_loader.ANALYZE_ALIGNMENT_SYSTEM,
+            "user": self.prompt_loader.ANALYZE_ALIGNMENT_USER(parsed_job, cv_latex),
+        }
+
+    def parse_response(self, response_text: str) -> Dict[str, Any]:
+        """Parse and normalize the agent's JSON response."""
+        if not response_text or not response_text.strip():
+            return self._empty_result("Empty response")
+
+        try:
+            analysis = json.loads(self._strip_code_fences(response_text))
+        except json.JSONDecodeError as exc:
+            return self._empty_result(f"JSON parse error: {exc}")
+
+        analysis.setdefault("overall_score", 0)
+        analysis.setdefault("overall_verdict", "")
+        analysis.setdefault("sections", [])
+        analysis.setdefault("missing_from_cv", [])
+        analysis.setdefault("strongest_matches", [])
+        analysis.setdefault("recommended_emphasis", [])
+        analysis.setdefault("priority_gaps", analysis.get("missing_from_cv", []))
+        analysis.setdefault("evidence_candidates", analysis.get("strongest_matches", []))
+        return analysis
+
+    def batch_prepare(self, parsed_jobs: List[Dict[str, Any]], cv_latex: str) -> List[Dict[str, str]]:
+        """Build prompt packages for multiple parsed jobs."""
+        return [self.prepare_prompt(job, cv_latex) for job in parsed_jobs]
+
+    @staticmethod
+    def _empty_result(error: str) -> Dict[str, Any]:
+        return {
+            "overall_score": 0,
+            "overall_verdict": "",
+            "sections": [],
+            "missing_from_cv": [],
+            "strongest_matches": [],
+            "recommended_emphasis": [],
+            "priority_gaps": [],
+            "evidence_candidates": [],
             "error": error,
         }
-    
-    def batch_analyze(
-        self,
-        parsed_jobs: List[Dict[str, Any]],
-        cv_latex: str,
-    ) -> List[Dict[str, Any]]:
-        """
-        Analyze CV alignment against multiple job postings.
-        
-        Args:
-            parsed_jobs: List of parsed job requirements
-            cv_latex: The candidate's CV in LaTeX format
-            
-        Returns:
-            List of alignment analysis dicts (one per job)
-        """
-        results = []
-        for job in parsed_jobs:
-            results.append(self.analyze(job, cv_latex))
-        return results
+
+    @staticmethod
+    def _strip_code_fences(text: str) -> str:
+        cleaned = text.strip()
+        if cleaned.startswith("```json"):
+            cleaned = cleaned[7:]
+        elif cleaned.startswith("```"):
+            cleaned = cleaned[3:]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        return cleaned.strip()
 
 
 def get_alignment_analyzer() -> CVAlignment:
-    """Get a default CVAlignment analyzer instance."""
+    """Return the default alignment helper."""
     return CVAlignment()

@@ -1,68 +1,54 @@
-name: career-assistant
-version: 1.0.0
-description: Automated job search, CV tailoring, and email campaign management skill for opencode
-author: user
+name: job-assist-skill
+version: 3.2.0
+description: Agent-operated skill for LinkedIn dual-stream scraping, staged prompt packaging, local CV compilation, and email draft generation.
+author: Abdullah Madoun
 tags:
   - job-search
   - linkedin
   - cv-tailoring
-  - latex
-  - email
-  - outlook
+  - agent-skill
+  - playwright
 triggers:
-  - /career
-  - /apply
   - job search
+  - scrape linkedin
   - tailor cv
-  - send applications
+  - cover letter prompt
+  - application email
 inputs:
-  jobs_or_ideas:
+  query:
     type: string
-    description: "Job search queries or career ideas (e.g., 'Python developer San Francisco' or 'frontend remote startup')"
-    required: true
-    multi: true
+    description: Freeform role or job search query
+    required: false
   cv_template:
     type: file
-    description: "User's LaTeX CV template file (.tex)"
-    required: true
-  cover_letter_template:
+    description: User's LaTeX CV template
+    required: false
+  linkedin_session:
     type: file
-    description: "Optional LaTeX cover letter template file (.tex)"
+    description: Saved LinkedIn browser session JSON
     required: false
-  search_roles:
-    type: string
-    description: "Job titles/roles to search for"
-    required: false
-  search_locations:
-    type: string
-    description: "Locations to search"
-    required: false
-  include_company_posts:
-    type: boolean
-    description: "Also scrape company LinkedIn pages for hiring posts"
-    default: true
 outputs:
-  compiled_cv:
+  search_results:
     type: file
-    description: "Tailored and compiled one-page PDF CV"
-  emails:
-    type: array
-    description: "Generated personalized emails ready for review"
-  cover_letters:
-    type: array
-    description: "Optional cover letters if template provided"
+    description: Normalized JSON results from the jobs and/or posts streams
+  tailoring_context:
+    type: file
+    description: Prompt package JSON for agent-driven CV tailoring
+  tailored_cv:
+    type: file
+    description: Tailored LaTeX CV ready for compilation
+  email_draft:
+    type: file
+    description: Local JSON draft for application outreach
 requires:
-  python: "3.8+"
-  linkedin_session: "path to LinkedIn session.json"
-  outlook_mcp: "configured and running"
-  latex_distribution: "pdflatex or similar"
+  python: "3.10+"
+  playwright: installed
+  linkedin_session: path to LinkedIn session.json for scraping
+  latex_distribution: optional, only needed for PDF compilation
 config:
-  max_jobs_per_search: 10
-  max_company_posts_per_company: 5
-  default_rewrite_coverage: 0.6
-  one_page_strict: true
-  auto_compile: true
-  feedback_storage: "career_assistant/storage/feedback.db"
-ui:
-  port: 5050
-  approval_workflow: true
+  default_stream: both
+  default_limit: 10
+  output_dir: output
+memory:
+  file: .job_assist/preferences.json
+  purpose: Stores user profile, preferred searches, sender information, and workflow defaults
