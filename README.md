@@ -16,8 +16,7 @@ The old Outlook MCP subtree is not part of the supported workflow. Legacy code i
 ## Quick Start
 
 ```bash
-git clone <your-repo-url>
-cd Linkedin-Scraper
+git clone https://github.com/AbdullahMadoun/JobAssistSkil
 pip install -e .
 playwright install chromium
 ```
