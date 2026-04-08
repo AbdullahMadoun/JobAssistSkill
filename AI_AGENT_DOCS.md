@@ -1,37 +1,20 @@
-# Vibecoding with JobAssistSkill 🚀
+# AI Agent Notes
 
-This repository is designed to be highly interoperable with AI coding assistants and autonomous agents ("vibecoding"). 
-It provides structured entry points for searching, tailoring, and career automation.
+`SKILL.md` is the source of truth for how an agent should use this repo.
 
-## For AI Agents: How to use this Repo
+Key rules:
 
-### 1. The Multi-Model Pipeline
-The core logic resides in `career_assistant/pipeline/`. 
-- **`CVTailoringPipeline`**: Prepares a JSON context that contains job requirements and CV LaTeX. 
-- **Agent Action**: You should take the `alignment_prompt` from the prepared context, send it to your LLM, and then call `apply_llm_results()` with the JSON output from the LLM.
+- the agent is the only reasoning layer
+- no external LLM API calls are part of the supported workflow
+- no Outlook MCP is part of the supported workflow; the archived legacy code lives in `archive/outlook-mcp-legacy/`
+- the first step is `python main.py doctor`
+- if `doctor` reports missing inputs, ask the user the blocking questions before continuing
+- reuse a saved LinkedIn session before starting a fresh login
+- use `python main.py search --stream jobs|posts|both` for scraping
+- use `--email-only-posts` when the user wants recruiter posts that expose a contact email
+- use `python main.py tailor ...` for staged prompt preparation and local CV rewrite application
+- use `python main.py email ...` only for local drafts; the output includes a `mailto_url` for the user’s email client
+- use `.job_assist/preferences.json` as persistent user memory
+- watch for placeholder-removal warnings in email drafts and surface them to the user instead of sending blindly
 
-### 2. CLI Entry Point (`main.py`)
-`main.py` is the primary interface for automated tasks.
-- **Search**: `python main.py search "roles" --location "loc"`
-- **Tailor**: `python main.py tailor --job-text "..." --cv-file "cv_template.tex"`
-- **UI**: `python main.py ui` (for interactive review)
-
-### 3. Key Components
-- **`linkedin_scraper`**: A Playwright-based scraper. It expects a `linkedin_session.json` which can be generated via `python main.py login`.
-- **`keywords.py`**: A centralized dictionary of search terms. Agents can expand this to target new industries.
-- **`output/`**: All generated artifacts (Tailored CVs, Emails, Search Results) are stored here. Agents should monitor this directory.
-
-### 4. Extending the Logic
-To add new tailoring strategies or scoring methods:
-- Modify `career_assistant/ranker.py` for scoring.
-- Update `career_assistant/pipeline/email_generator.py` for personalized messaging.
-
-## Agent Workflow (Recommended)
-1. **Login**: Ask the user to run `python main.py login` once.
-2. **Search**: Run `python main.py search` to find target roles.
-3. **Analyze**: Read the results from `output/search_results.json`.
-4. **Tailor**: For each interesting role, run `python main.py tailor`.
-5. **Collaborate**: Show the generated draft to the user for final approval before sending.
-
----
-*Built for the future of AI-assisted career development.*
+For end-to-end operator setup, see `CAREER_ASSISTANT.md`.

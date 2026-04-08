@@ -1,234 +1,240 @@
-# Career Assistant
+# Career Assistant Setup Report
 
-Automated job search, CV tailoring, cover letter generation, and email campaign management for job applications.
+This document explains how to operate the repo from scratch as a local skill for a coding agent.
 
-## Quick Start
+## Current Model
 
-```bash
-# Install dependencies
-pip install -r requirements.txt
+The repo is now agent-first:
 
-# Login to LinkedIn (one-time setup)
-python main.py login --session linkedin_session.json
+- the agent is the reasoning layer
+- the repo performs deterministic local work only
+- no external LLM API is required
+- no Outlook MCP is part of the active workflow
 
-# Run everything in one go: search → tailor → PDF → email
-python run_all.py --preset gulf_tech
+Active capabilities:
 
-# Or use custom roles
-python run_all.py --roles "software_engineer,data_ml" --location "Remote" --limit 10
+- LinkedIn search through `jobs`, `posts`, or `both`
+- staged prompt packaging for CV tailoring
+- deterministic application of agent-authored JSON edits
+- local PDF compilation
+- local email drafting with `mailto:` handoff
+- persistent memory in `.job_assist/preferences.json`
 
-# Run full demo (uses your CV template)
-python main.py demo
-```
+Legacy Outlook code is archived in `archive/outlook-mcp-legacy/`.
 
-## Commands
+## What Was Fixed
 
-### `search` - Find Hiring Posts
+The major repair areas were:
 
-```bash
-# Simple keyword search
-python main.py search "software engineer" --location "Remote" --hours 24
+1. Packaging and imports
+   The repo now imports cleanly and installs as a usable Python package.
 
-# Use preset (see --list-presets for all)
-python main.py search --preset remote_software
-python main.py search --preset us_tech
-python main.py search --preset gulf_tech
+2. Agent-facing workflow
+   The CLI was rewritten around explicit search, tailoring, compile, email, memory, and setup stages.
 
-# Custom role categories from keywords.py
-python main.py search --roles "software_engineer,data_ml" --location "usa,remote"
+3. Persistent memory
+   `.job_assist/preferences.json` now stores profile, file paths, search defaults, and sender settings.
 
-# List available presets
-python main.py search --list-presets
-```
+4. Prompt staging
+   The tailoring flow now starts with `PARSE_JOB`, then alignment, then replace, then apply.
 
-Available presets:
-- `remote_software` - Remote software/senior engineers
-- `us_tech` - US tech hubs (SF, Seattle, Boston)
-- `gulf_tech` - Saudi Arabia, UAE, GCC
-- `europe_tech` - Europe + UK tech hubs
-- `asia_tech` - Singapore, HK, Tokyo, Seoul
-- `entry_level` - Junior/graduate positions
-- `data_science` - ML/AI/data roles
-- `devops` - DevOps/SRE/Cloud roles
+5. Search result quality
+   Normalized candidates now carry `match_score`, `quality_flags`, `snippet`, `next_action`, and `detail_level`.
 
-### `tailor` - Prepare CV Tailoring
+6. Email safety
+   Email drafts now include `mailto_url` and warnings for placeholder-like values such as `COMPANY1`.
 
-```bash
-python main.py tailor \
-    --job-file job_posting.txt \
-    --cv-file cv_template.tex \
-    --output output/ \
-    --save-context
-```
+7. Login reuse
+   The login path now reuses a still-valid saved LinkedIn session instead of forcing a fresh login every time.
 
-### `compile` - Compile LaTeX to PDF
+8. Job scraping quality
+   The jobs stream still uses the Playwright/session backbone, but the page parser now uses rendered HTML plus JSON-LD so title, company, location, posted date, applicant count, and description are separated correctly.
 
-```bash
-python main.py compile --latex-file output/cv_tailored.tex --output output/cv_tailored.pdf
-```
+9. Blocking-input detection
+   `python main.py doctor` now reports missing essentials and gives the exact questions the agent should ask before continuing.
 
-### `email` - Generate Application Email
+10. Tests
+   The active workflow is now covered by a deterministic test suite.
 
-```bash
-python main.py email \
-    --job "Software Engineer" \
-    --company "Microsoft" \
-    --to "careers@microsoft.com" \
-    --cv output/cv.pdf
-```
+## Verified State
 
-### `ui` - Start Web UI
+Current deterministic verification:
 
-```bash
-python main.py ui --port 5050
-```
+- `python -m pytest -q` passes with 28 tests
+- `python -m compileall .` passes
 
-### `login` - LinkedIn Login
+Current live validation in this workspace:
+
+- `python main.py doctor` reports the current local setup status and any blocking questions
+- `python main.py login` reuses a valid saved LinkedIn session instead of forcing a fresh login
+- `python main.py search --stream jobs --limit 1 --timeout 20 --headless` returned an expanded job record with title, company, location, posted date, applicant count, and description
+- `python main.py search --stream posts ...` still remains the main live limitation; it fails safely but can return empty or time out under current LinkedIn conditions
+
+That means:
+
+- the repo is usable now for agent-driven job search and tailoring
+- the `jobs` stream is the reliable backbone today
+- the `posts` and `email-only-posts` modes are implemented and safe, but still need further recall tuning if they are meant to be primary
+
+## Fresh Install
+
+Clone and install:
 
 ```bash
-python main.py login --session linkedin_session.json
+git clone <your-repo-url>
+cd Linkedin-Scraper
+pip install -e .
+playwright install chromium
 ```
 
-### `demo` - Full Workflow Demo
+Optional:
 
 ```bash
-python main.py demo --session linkedin_session.json
+pip install -r requirements-dev.txt
 ```
 
-## run_all.py - Complete Workflow
+## First-Time Agent Flow
 
-The `run_all.py` script runs the entire pipeline in one command:
+1. Run the setup check:
 
 ```bash
-# Run everything: search → tailor CV → compile PDF → generate email
-python run_all.py --preset gulf_tech
-
-# Custom roles and locations
-python run_all.py --roles "software_engineer,data_ml" --location "Remote,USA"
-
-# More candidates
-python run_all.py --preset us_tech --max-candidates 10
+python main.py doctor
 ```
 
-**What it does:**
-1. Searches LinkedIn for hiring posts matching your preset/keywords
-2. For each post: prepares CV tailoring context
-3. Applies LLM suggestions (or simulates if no LLM)
-4. Compiles tailored CV to one-page PDF
-5. Generates personalized application email
-6. Saves everything to `output/` folder
+2. If `blocking_inputs` is non-empty, ask those exact questions before continuing.
 
-**Output files:**
-- `cv_{session_id}_tailored.tex` - Tailored CV LaTeX
-- `cv_{session_id}_tailored.pdf` - Compiled CV PDF
-- `email_{session_id}.json` - Generated email (subject, body, to, cc)
-- `run_all_{timestamp}.json` - Full results summary
+3. Save the answers into memory:
 
-**Presets available:**
-| Preset | Roles | Locations |
-|--------|-------|-----------|
-| `remote_software` | software/senior | Remote |
-| `us_tech` | software/data/cloud | SF, Seattle, Boston |
-| `gulf_tech` | software/senior | Saudi Arabia, UAE, GCC |
-| `europe_tech` | software/data | Europe, UK |
-| `asia_tech` | software/data/mobile | Asia, Singapore |
-| `entry_level` | junior/grad | USA, UK, Remote |
-| `data_science` | ML/AI/data | US tech, Remote |
-| `devops` | DevOps/SRE | Remote, USA |
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        User                                 │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     main.py (CLI)                          │
-│   search | tailor | compile | email | ui | login | demo     │
-└─────────────────────────────────────────────────────────────┘
-                              │
-         ┌────────────────────┼────────────────────┐
-         ▼                    ▼                    ▼
-┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
-│ linkedin_scraper│  │ career_assistant│  │    prompts.js   │
-│                 │  │                 │  │                 │
-│ • JobSearch     │  │ • Tailoring     │  │ • PARSE_JOB     │
-│ • PostSearch    │  │ • LaTeX Compile │  │ • ANALYZE       │
-│ • HiringSearch  │  │ • Email Gen     │  │ • REPLACE       │
-│ • CompanyPosts  │  │ • Feedback Store│  │ • COVER_LETTER  │
-└─────────────────┘  └─────────────────┘  └─────────────────┘
-                              │
-                              ▼ (opencode handles LLM calls)
-                     ┌─────────────────┐
-                     │   opencode LLM  │
-                     │                 │
-                     │ • GPT-4         │
-                     │ • Claude        │
-                     │ • etc.          │
-                     └─────────────────┘
+```bash
+python main.py memory set profile.name "Your Name"
+python main.py memory set profile.email "you@example.com"
+python main.py memory set files.cv_path "cv_template.tex"
 ```
 
-## Project Structure
+4. Re-run:
 
-```
-Linkedin-Scraper/
-├── main.py                  # CLI entry point
-├── cv_template.tex          # Your LaTeX CV template
-├── prompts.js                # CV tailoring prompts
-├── linkedin_session.json    # LinkedIn auth session
-├── output/                   # Generated CVs, PDFs, emails
-│
-├── linkedin_scraper/        # LinkedIn scraping
-│   ├── __init__.py
-│   ├── core/
-│   │   └── browser.py      # BrowserManager with stealth
-│   ├── scrapers/
-│   │   ├── post_search.py  # PostSearchScraper, HiringPostSearcher
-│   │   └── job_search.py    # JobSearchScraper
-│   └── models/
-│       └── post.py         # Post model
-│
-└── career_assistant/        # CV tailoring & workflow
-    ├── __init__.py          # CareerAssistant class
-    ├── pipeline/
-    │   ├── tailoring.py     # CV tailoring preparation
-    │   ├── latex_compiler.py # LaTeX → PDF
-    │   ├── email_generator.py
-    │   └── aggregator.py    # Multi-source job aggregation
-    ├── prompts/
-    │   └── loader.py        # Load prompts.js
-    ├── storage/
-    │   └── feedback.py      # SQLite learning system
-    └── ui/
-        └── app.py           # Flask web UI
+```bash
+python main.py doctor
 ```
 
-## CV Tailoring Flow
+5. Only if the saved session is missing or invalid, run:
 
-1. **Prepare**: `CVTailoringPipeline.prepare()` generates prompts from job text + CV
-2. **LLM Parse**: Send `job_requirements.parse_prompt` to LLM → get JSON requirements
-3. **LLM Analyze**: Send `alignment_prompt` to LLM → get alignment analysis
-4. **LLM Rewrite**: Send `replace_prompt` to LLM → get suggested edits
-5. **Apply**: `apply_llm_results()` applies edits to LaTeX
-6. **Compile**: `LaTeXCompiler.compile_one_page()` → PDF
+```bash
+python main.py login
+```
 
-## Files
+or:
 
-| File | Description |
-|------|-------------|
-| `main.py` | CLI entry point |
-| `cv_template.tex` | Your LaTeX CV template |
-| `prompts.js` | LLM prompts for CV tailoring |
-| `linkedin_session.json` | LinkedIn authentication session |
-| `output/` | Generated files (CVs, PDFs, emails) |
-| `VIBE_CODING.md` | Guide for AI Agent interactions |
-| `career_assistant/storage/feedback.db` | SQLite database for learning |
+```bash
+python main.py login --auto
+```
 
-## Requirements
+## Search From Scratch
 
-- Python 3.8+
-- LinkedIn authenticated session
-- LaTeX distribution (pdflatex) for PDF compilation
-- Chrome/Firefox browser for Playwright
+Jobs only:
+
+```bash
+python main.py search "operations manager" --stream jobs --location "Riyadh" --output output/jobs.json
+```
+
+Posts only:
+
+```bash
+python main.py search "operations manager" --stream posts --location "Riyadh" --output output/posts.json
+```
+
+Both:
+
+```bash
+python main.py search "operations manager" --stream both --location "Riyadh" --output output/both.json
+```
+
+Posts with contact emails only:
+
+```bash
+python main.py search "operations manager" --stream posts --email-only-posts --output output/posts_email.json
+```
+
+If query defaults are already saved in memory, the agent can also run:
+
+```bash
+python main.py search --stream jobs --output output/jobs.json
+```
+
+## Tailoring Workflow
+
+Prepare:
+
+```bash
+python main.py tailor prepare --job-file job.txt --cv-file cv_template.tex --output-dir output
+```
+
+Alignment prompt package:
+
+```bash
+python main.py tailor alignment --parsed-job output/parsed_job.json --cv-file cv_template.tex --output output/alignment_prompt.json
+```
+
+Rewrite prompt package:
+
+```bash
+python main.py tailor replace --alignment output/alignment.json --cv-file cv_template.tex --output output/replace_prompt.json
+```
+
+Cover-letter prompt package:
+
+```bash
+python main.py tailor cover-letter --parsed-job output/parsed_job.json --cv-file cv_template.tex --alignment output/alignment.json --output output/cover_letter_prompt.json
+```
+
+Apply:
+
+```bash
+python main.py tailor apply --context output/context_<id>.json --alignment output/alignment.json --changes output/changes.json --output output/tailored.tex
+```
+
+Compile:
+
+```bash
+python main.py compile --latex-file output/tailored.tex --output output/tailored.pdf
+```
+
+The stage payloads now carry explicit output contracts and quality checks so the agent can self-prompt more reliably.
+
+## Email Workflow
+
+Create a draft:
+
+```bash
+python main.py email --job "Operations Manager" --company "Example Co" --to "jobs@example.com" --output output/email.json
+```
+
+Open the user’s local mail client via `mailto:`:
+
+```bash
+python main.py email --job "Operations Manager" --company "Example Co" --to "jobs@example.com" --open-mailto
+```
+
+Important behavior:
+
+- drafts include `mailto_url`
+- drafts include `warnings`
+- placeholder-like values such as `COMPANY1` are removed instead of passed through
+
+## Recommended Validation
+
+```bash
+python main.py doctor
+python -m pytest -q
+python -m compileall .
+```
+
+## Commit Readiness Note
+
+The repo is now coherent enough to start committing.
+
+The only remaining high-signal live limitation is post-stream recall under current LinkedIn conditions. That should be documented honestly, but it does not block commits for the repaired agent-first skill baseline because:
+
+- jobs search is live-validated
+- deterministic tests pass
+- mailto, memory, setup checks, and prompt staging are all in place
